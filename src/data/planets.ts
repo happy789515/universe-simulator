@@ -8,6 +8,8 @@ export interface PlanetDefinition {
   radiusEarth: number;
   /** Sidereal orbital period in Earth days */
   orbitalPeriodDays: number;
+  /** Mass in kilograms (NASA planetary fact sheet) */
+  massKg: number;
   color: number;
   /** Optional ring (Saturn) */
   hasRings?: boolean;
@@ -23,6 +25,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 0.387,
     radiusEarth: 0.383,
     orbitalPeriodDays: 88,
+    massKg: 3.3011e23,
     color: 0x9ca3af,
   },
   {
@@ -32,6 +35,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 0.723,
     radiusEarth: 0.949,
     orbitalPeriodDays: 224.7,
+    massKg: 4.8675e24,
     color: 0xeab676,
   },
   {
@@ -41,6 +45,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 1.0,
     radiusEarth: 1.0,
     orbitalPeriodDays: 365.25,
+    massKg: 5.9724e24,
     color: 0x3b82f6,
   },
   {
@@ -50,6 +55,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 1.524,
     radiusEarth: 0.532,
     orbitalPeriodDays: 687,
+    massKg: 6.4171e23,
     color: 0xef4444,
   },
   {
@@ -59,6 +65,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 5.204,
     radiusEarth: 11.21,
     orbitalPeriodDays: 4333,
+    massKg: 1.8982e27,
     color: 0xd97706,
   },
   {
@@ -68,6 +75,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 9.582,
     radiusEarth: 9.45,
     orbitalPeriodDays: 10759,
+    massKg: 5.6834e26,
     color: 0xfcd34d,
     hasRings: true,
   },
@@ -78,6 +86,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 19.201,
     radiusEarth: 4.007,
     orbitalPeriodDays: 30687,
+    massKg: 8.681e25,
     color: 0x67e8f9,
   },
   {
@@ -87,6 +96,7 @@ export const PLANETS: PlanetDefinition[] = [
     semiMajorAxisAu: 30.047,
     radiusEarth: 3.883,
     orbitalPeriodDays: 60190,
+    massKg: 1.02413e26,
     color: 0x2563eb,
   },
 ];

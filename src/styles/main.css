@@ -159,6 +159,47 @@ input[type="range"] {
   margin-top: 0.5rem;
 }
 
+.planet-fact + .planet-fact {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.planet-fact-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 0.35rem;
+}
+
+.planet-fact-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.planet-fact-list div {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.planet-fact-list dt {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.planet-fact-list dd {
+  font-size: 0.75rem;
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+
+.info-empty {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
 #hud {
   position: fixed;
   left: 1rem;
