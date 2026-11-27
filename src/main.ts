@@ -25,7 +25,6 @@ import { LabelLayer } from "./render/labels";
 import { BOOT_WEIGHT, BootScreen, afterPaint, bootTotal } from "./ui/bootScreen";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
-const hud = document.getElementById("hud")!;
 const app = document.getElementById("app");
 const bootRoot = document.getElementById("boot");
 if (!app) throw new Error("Missing #app");
@@ -89,11 +88,6 @@ async function boot(): Promise<void> {
 
   loading.setStage("galaxy");
   await afterPaint();
-
-  const backendName =
-    (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
-      ? "WebGPU"
-      : "WebGL2";
 
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -255,7 +249,6 @@ async function boot(): Promise<void> {
       appEl.setAttribute("aria-busy", "false");
       loading.finish();
     }
-    hud.textContent = `${sim.getHudText()} · ${rig.statusText()} · ${backendName}`;
   });
 }
 

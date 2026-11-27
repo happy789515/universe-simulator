@@ -47,6 +47,7 @@ export class ToolPalette {
   private toolHint!: HTMLParagraphElement;
   private captionEl!: HTMLDivElement;
   private panelToggle!: HTMLButtonElement;
+  private panelReopen!: HTMLButtonElement;
   private panelOpen = true;
 
   constructor(rootId: string, handlers: ToolPaletteHandlers) {
@@ -119,6 +120,7 @@ export class ToolPalette {
 
   private render(): void {
     this.root.innerHTML = `
+      <button type="button" class="tool-btn" id="panel-toggle">패널 닫기</button>
       <p class="panel-title">우주 도구</p>
       <section class="tool-group">
         <h3>소리</h3>
@@ -215,16 +217,16 @@ export class ToolPalette {
     this.captionEl.className = "event-caption";
     this.captionEl.setAttribute("aria-live", "polite");
     document.getElementById("app")?.appendChild(this.captionEl);
-    this.panelToggle = document.createElement("button");
-    this.panelToggle.type = "button";
-    this.panelToggle.id = "panel-toggle";
-    this.panelToggle.addEventListener("click", () => {
-      this.panelOpen = !this.panelOpen;
-      this.root.classList.toggle("is-closed", !this.panelOpen);
-      document.getElementById("app")?.classList.toggle("panel-closed", !this.panelOpen);
-      this.syncPanelToggle();
-    });
-    document.getElementById("app")?.appendChild(this.panelToggle);
+    const toggle = this.root.querySelector("#panel-toggle");
+    if (!(toggle instanceof HTMLButtonElement)) throw new Error("Missing #panel-toggle");
+    this.panelToggle = toggle;
+    this.panelToggle.addEventListener("click", () => this.setPanelOpen(false));
+    this.panelReopen = document.createElement("button");
+    this.panelReopen.type = "button";
+    this.panelReopen.id = "panel-reopen";
+    this.panelReopen.textContent = "패널 열기";
+    this.panelReopen.addEventListener("click", () => this.setPanelOpen(true));
+    document.getElementById("app")?.appendChild(this.panelReopen);
     this.syncPanelToggle();
     const infoRoot = this.root.querySelector("#planet-info");
     if (!(infoRoot instanceof HTMLElement)) {
@@ -290,10 +292,20 @@ export class ToolPalette {
     });
   }
 
+  private setPanelOpen(open: boolean): void {
+    this.panelOpen = open;
+    this.root.classList.toggle("is-closed", !open);
+    document.getElementById("app")?.classList.toggle("panel-closed", !open);
+    this.syncPanelToggle();
+  }
+
   private syncPanelToggle(): void {
-    this.panelToggle.textContent = this.panelOpen ? "패널 닫기" : "패널 열기";
-    this.panelToggle.setAttribute("aria-expanded", String(this.panelOpen));
+    const expanded = String(this.panelOpen);
+    this.panelToggle.setAttribute("aria-expanded", expanded);
     this.panelToggle.setAttribute("aria-controls", "sidebar");
+    this.panelReopen.setAttribute("aria-expanded", expanded);
+    this.panelReopen.setAttribute("aria-controls", "sidebar");
+    this.panelReopen.hidden = this.panelOpen;
   }
 
   private syncMusicButton(): void {

@@ -917,27 +917,6 @@ export class SolarSystem {
     }
   }
 
-  getHudText(): string {
-    const destroyedCount = [...this.planets.values()].filter((p) => p.destroyed).length;
-    const sel = this.selectedIds.size > 0 ? [...this.selectedIds].join(", ") : "없음";
-    const scale = this.paused ? "일시정지" : `${this.appliedScale.toFixed(2)}×`;
-    const tool =
-      this.mode === "meteor"
-        ? "운석"
-        : this.mode === "blackhole"
-          ? "블랙홀"
-          : this.mode === "laser"
-            ? "광선"
-            : "선택";
-    return [
-      `도구: ${tool}`,
-      `시뮬레이션 일수: ${this.simDays.toFixed(0)}`,
-      `선택: ${sel}`,
-      `파괴됨: ${destroyedCount}/${PLANETS.length}`,
-      `시간 배율: ${scale}`,
-    ].join(" · ");
-  }
-
   listStates(): { id: string; nameKo: string; color: number; destroyed: boolean }[] {
     return PLANETS.map((p) => {
       const runtime = this.planets.get(p.id)!;
