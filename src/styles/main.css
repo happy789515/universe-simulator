@@ -58,16 +58,48 @@ body,
   top: 0.75rem;
   right: 0;
   z-index: 20;
-  padding: 0.45rem 0.35rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
   border: 1px solid rgba(148, 163, 184, 0.45);
   border-right: none;
   border-radius: 0.375rem 0 0 0.375rem;
   background: rgba(15, 23, 42, 0.92);
-  color: #fde68a;
-  font-size: 0.75rem;
-  line-height: 1.2;
   cursor: pointer;
-  writing-mode: vertical-rl;
+}
+
+#panel-reopen:not([hidden]) {
+  display: grid;
+  place-items: center;
+}
+
+#panel-reopen .hamburger,
+#panel-reopen .hamburger::before,
+#panel-reopen .hamburger::after {
+  display: block;
+  width: 1rem;
+  height: 2px;
+  border-radius: 1px;
+  background: #fde68a;
+}
+
+#panel-reopen .hamburger {
+  position: relative;
+}
+
+#panel-reopen .hamburger::before,
+#panel-reopen .hamburger::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+#panel-reopen .hamburger::before {
+  top: -5px;
+}
+
+#panel-reopen .hamburger::after {
+  top: 5px;
 }
 
 .tool-hint {

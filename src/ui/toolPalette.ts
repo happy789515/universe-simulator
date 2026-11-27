@@ -224,7 +224,11 @@ export class ToolPalette {
     this.panelReopen = document.createElement("button");
     this.panelReopen.type = "button";
     this.panelReopen.id = "panel-reopen";
-    this.panelReopen.textContent = "패널 열기";
+    this.panelReopen.setAttribute("aria-label", "패널 열기");
+    const bars = document.createElement("span");
+    bars.className = "hamburger";
+    bars.setAttribute("aria-hidden", "true");
+    this.panelReopen.appendChild(bars);
     this.panelReopen.addEventListener("click", () => this.setPanelOpen(true));
     document.getElementById("app")?.appendChild(this.panelReopen);
     this.syncPanelToggle();
