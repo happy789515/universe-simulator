@@ -8,10 +8,26 @@
     <link rel="stylesheet" href="/src/styles/main.css" />
   </head>
   <body>
-    <div id="app">
+    <div id="app" aria-busy="true">
       <canvas id="scene"></canvas>
       <aside id="sidebar" aria-label="도구 팔레트"></aside>
       <div id="hud" aria-live="polite"></div>
+      <div
+        id="boot"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="0"
+        aria-valuetext="특이점 0%"
+        aria-label="우주 생성"
+      >
+        <div class="boot-stack">
+          <div class="boot-core" aria-hidden="true"></div>
+          <p class="boot-stage" data-boot-stage>특이점</p>
+          <p class="boot-pct" data-boot-pct>0%</p>
+          <div class="boot-track" aria-hidden="true"><div data-boot-fill></div></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
