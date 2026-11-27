@@ -1,3 +1,4 @@
+import { ambient } from "../audio/ambience";
 import { CameraMode } from "../camera/cameraRig";
 import { SolarSystem, ToolMode } from "../sim/solarSystem";
 import { PlanetInfoPanel } from "./planetInfoPanel";
@@ -34,6 +35,7 @@ export class ToolPalette {
   private undoBtn!: HTMLButtonElement;
   private timeLabel!: HTMLSpanElement;
   private pauseBtn!: HTMLButtonElement;
+  private musicBtn!: HTMLButtonElement;
   private infoPanel!: PlanetInfoPanel;
 
   constructor(rootId: string, handlers: ToolPaletteHandlers) {
@@ -97,11 +99,16 @@ export class ToolPalette {
     }
 
     this.infoPanel.show(sim.selectedIds);
+    this.syncMusicButton();
   }
 
   private render(): void {
     this.root.innerHTML = `
       <p class="panel-title">우주 도구</p>
+      <section class="tool-group">
+        <h3>소리</h3>
+        <button type="button" class="tool-btn" id="music-toggle" data-music-toggle>배경음 켜짐</button>
+      </section>
       <section class="tool-group" id="planet-info" aria-live="polite"></section>
       <section class="tool-group">
         <h3>모드</h3>
@@ -187,6 +194,17 @@ export class ToolPalette {
     this.undoBtn = this.root.querySelector("#undo-btn")!;
     this.timeLabel = this.root.querySelector("#time-label")!;
     this.pauseBtn = this.root.querySelector("#pause-btn")!;
+    const musicBtn = this.root.querySelector("#music-toggle");
+    if (!(musicBtn instanceof HTMLButtonElement)) throw new Error("Missing #music-toggle");
+    this.musicBtn = musicBtn;
+    this.musicBtn.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+    this.musicBtn.addEventListener("click", () => {
+      ambient.toggleMuted();
+      this.syncMusicButton();
+    });
+    this.syncMusicButton();
 
     this.root.querySelectorAll("[data-action]").forEach((node) => {
       const btn = node as HTMLButtonElement;
@@ -224,11 +242,18 @@ export class ToolPalette {
       if (v <= 1) return 0.25 + (v / 1) * 0.75;
       return 1 + ((v - 1) / 99) * 99;
     };
-  slider.addEventListener("input", () => {
+    slider.addEventListener("input", () => {
       const raw = Number(slider.value);
       const scale = mapScale(raw);
       this.handlers.onTimeScale(scale);
       this.refresh();
     });
+  }
+
+  private syncMusicButton(): void {
+    const on = !ambient.isMuted();
+    this.musicBtn.textContent = on ? "배경음 켜짐" : "배경음 꺼짐";
+    this.musicBtn.classList.toggle("active", on);
+    this.musicBtn.setAttribute("aria-pressed", String(on));
   }
 }
