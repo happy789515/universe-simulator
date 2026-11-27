@@ -1,4 +1,5 @@
 import { SolarSystem, ToolMode } from "../sim/solarSystem";
+import { PlanetInfoPanel } from "./planetInfoPanel";
 
 export interface ToolPaletteHandlers {
   onModeChange: (mode: ToolMode) => void;
@@ -22,6 +23,7 @@ export class ToolPalette {
   private undoBtn!: HTMLButtonElement;
   private timeLabel!: HTMLSpanElement;
   private pauseBtn!: HTMLButtonElement;
+  private infoPanel!: PlanetInfoPanel;
 
   constructor(rootId: string, handlers: ToolPaletteHandlers) {
     const el = document.getElementById(rootId);
@@ -64,7 +66,6 @@ export class ToolPalette {
           this.handlers.onSelectPlanet(item.id);
         } else {
           sim.selectOnly(item.id);
-          this.handlers.onSelectPlanet(item.id);
         }
         this.refresh();
       });
@@ -75,11 +76,14 @@ export class ToolPalette {
 
       this.planetList.appendChild(li);
     }
+
+    this.infoPanel.show(sim.selectedIds);
   }
 
   private render(): void {
     this.root.innerHTML = `
       <p class="panel-title">우주 도구</p>
+      <section class="tool-group" id="planet-info" aria-live="polite"></section>
       <section class="tool-group">
         <h3>모드</h3>
         <div class="btn-row" id="mode-row"></div>
@@ -131,6 +135,11 @@ export class ToolPalette {
     }
 
     this.planetList = this.root.querySelector("#planet-list")!;
+    const infoRoot = this.root.querySelector("#planet-info");
+    if (!(infoRoot instanceof HTMLElement)) {
+      throw new Error("Missing #planet-info");
+    }
+    this.infoPanel = new PlanetInfoPanel(infoRoot);
     this.undoBtn = this.root.querySelector("#undo-btn")!;
     this.timeLabel = this.root.querySelector("#time-label")!;
     this.pauseBtn = this.root.querySelector("#pause-btn")!;
