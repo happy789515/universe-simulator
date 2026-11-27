@@ -10,27 +10,21 @@ import {
 } from "three/webgpu";
 import type { Object3D } from "three/webgpu";
 import { ParticleSystem } from "../effects/particles";
-import { Dyn, integrate, resolveContact } from "./physics";
+import { ContactWorld } from "./physics";
 
 const HIT = 1.35;
 const UP = new Vector3(0, 1, 0);
 
-export interface CraftTarget {
-  position: Vector3;
-  radius: number;
-  alive: boolean;
-}
-
 interface Craft {
   kind: "satellite" | "spacecraft";
   mesh: Group;
+  handle: number;
   radius: number;
   angle: number;
   speed: number;
   tilt: number;
   node: number;
   pos: Vector3;
-  vel: Vector3;
   steer: number;
   heading: Vector3;
 }
@@ -41,6 +35,8 @@ export class CraftField {
   constructor(
     private readonly parent: Object3D,
     private readonly particles: ParticleSystem,
+    private readonly world: ContactWorld,
+    private readonly onBurst: (at: Vector3, linvel: Vector3, angvel: Vector3) => void,
   ) {}
 
   get satellites(): number {
@@ -62,11 +58,12 @@ export class CraftField {
       tilt: (Math.random() - 0.5) * 0.55,
       node: Math.random() * Math.PI * 2,
       pos: new Vector3(),
-      vel: new Vector3(),
       steer: 0,
       heading: new Vector3(),
+      handle: 0,
     };
-    this.placeSatellite(craft, 0);
+    this.placeOrbit(craft, 0);
+    craft.handle = this.world.spawnKinematicBall(craft.pos, HIT, "satellite");
     this.parent.add(craft.mesh);
     this.items.push(craft);
     return this.satellites;
@@ -86,12 +83,25 @@ export class CraftField {
       tilt: 0,
       node: 0,
       pos,
-      vel: heading.clone().multiplyScalar(8 + Math.random() * 10),
       steer: 1.2 + Math.random() * 2.4,
       heading,
+      handle: 0,
     };
+    const lin = heading.clone().multiplyScalar(craft.speed);
+    craft.handle = this.world.spawnDynamic({
+      kind: "craft",
+      tag: "spacecraft",
+      pos,
+      linvel: lin,
+      angvel: new Vector3(),
+      radius: HIT,
+      half: new Vector3(),
+      restitution: 0.3,
+      friction: 0.45,
+      ccd: true,
+    });
     craft.mesh.position.copy(pos);
-    aim(craft.mesh, craft.vel);
+    aim(craft.mesh, lin);
     this.parent.add(craft.mesh);
     this.items.push(craft);
     return this.spacecraft;
@@ -102,21 +112,45 @@ export class CraftField {
     this.items.length = 0;
   }
 
-  update(dt: number, targets: readonly CraftTarget[]): void {
-    if (dt <= 0 || this.items.length === 0) return;
-    const steps = Math.max(1, Math.ceil(dt / 0.02));
-    const h = dt / steps;
-    for (let step = 0; step < steps; step++) {
-      for (const craft of this.items) {
-        if (craft.kind === "satellite") this.placeSatellite(craft, h);
-        else this.flyShip(craft, h);
+  preStep(dt: number, paused: boolean): void {
+    for (const craft of this.items) {
+      if (craft.kind === "satellite") {
+        if (paused) this.world.hold(craft.handle, craft.pos);
+        else {
+          this.placeOrbit(craft, dt);
+          this.world.kinematicTo(craft.handle, craft.pos);
+        }
+        continue;
       }
-      if (this.collide(targets)) break;
+      this.steerShip(craft, dt, paused);
     }
   }
 
-  private placeSatellite(craft: Craft, dt: number): void {
-    const before = craft.pos.clone();
+  postStep(): void {
+    const dead = new Set<Craft>();
+    for (const craft of this.items) {
+      const pose = this.world.read(craft.handle);
+      if (!pose) continue;
+      craft.pos.copy(pose.pos);
+      craft.mesh.position.copy(pose.pos);
+      if (craft.kind === "satellite") craft.mesh.lookAt(0, craft.pos.y, 0);
+      else if (pose.angvel.lengthSq() > 0.2) craft.mesh.quaternion.copy(pose.rot);
+      else if (pose.linvel.lengthSq() > 1e-6) aim(craft.mesh, pose.linvel);
+      const hit = this.world.partners(craft.handle).some((partner) => partner.kind === "planet" || partner.kind === "craft" || partner.kind === "meteor");
+      if (!hit) continue;
+      dead.add(craft);
+      this.particles.spawnExplosion(pose.pos.clone(), 0xfbbf24, 70);
+      this.onBurst(pose.pos.clone(), pose.linvel.clone(), pose.angvel.clone());
+    }
+    if (dead.size === 0) return;
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      if (!dead.has(this.items[i])) continue;
+      this.dispose(this.items[i]);
+      this.items.splice(i, 1);
+    }
+  }
+
+  private placeOrbit(craft: Craft, dt: number): void {
     craft.angle += craft.speed * dt;
     const cosN = Math.cos(craft.node);
     const sinN = Math.sin(craft.node);
@@ -124,13 +158,16 @@ export class CraftField {
     const z = Math.sin(craft.angle) * craft.radius;
     const y = Math.sin(craft.angle) * Math.sin(craft.tilt) * craft.radius;
     craft.pos.set(cosN * x - sinN * z, y, sinN * x + cosN * z);
-    if (dt > 1e-6) craft.vel.copy(craft.pos).sub(before).multiplyScalar(1 / dt);
-    craft.mesh.position.copy(craft.pos);
-    craft.mesh.lookAt(0, craft.pos.y, 0);
   }
 
-  private flyShip(craft: Craft, dt: number): void {
+  private steerShip(craft: Craft, dt: number, paused: boolean): void {
+    if (paused) {
+      this.world.hold(craft.handle, craft.pos);
+      return;
+    }
     craft.steer -= dt;
+    const pose = this.world.read(craft.handle);
+    if (pose) craft.pos.copy(pose.pos);
     if (craft.steer <= 0 || craft.pos.length() > 96) {
       const home = craft.pos.length() > 96;
       craft.heading.set(
@@ -142,59 +179,11 @@ export class CraftField {
       craft.heading.normalize();
       craft.steer = 1.4 + Math.random() * 2.8;
     }
-    const acc = craft.heading.clone().multiplyScalar(craft.speed).sub(craft.vel).multiplyScalar(1.6);
-    const body: Dyn = { pos: craft.pos, vel: craft.vel, radius: HIT, invMass: 1 };
-    integrate(body, acc, dt);
-    craft.mesh.position.copy(craft.pos);
-    if (craft.vel.lengthSq() > 1e-6) aim(craft.mesh, craft.vel);
-  }
-
-  private collide(targets: readonly CraftTarget[]): boolean {
-    const dead = new Set<Craft>();
-    const bursts: { at: Vector3; vel: Vector3 }[] = [];
-    for (let i = 0; i < this.items.length; i++) {
-      const a = this.items[i];
-      const bodyA: Dyn = { pos: a.pos, vel: a.vel, radius: HIT, invMass: 1 };
-      for (let j = i + 1; j < this.items.length; j++) {
-        const b = this.items[j];
-        const bodyB: Dyn = { pos: b.pos, vel: b.vel, radius: HIT, invMass: 1 };
-        if (!resolveContact(bodyA, bodyB, 0.2)) continue;
-        dead.add(a);
-        dead.add(b);
-        bursts.push({
-          at: a.pos.clone().add(b.pos).multiplyScalar(0.5),
-          vel: a.vel.clone().add(b.vel).multiplyScalar(0.5),
-        });
-      }
-      if (dead.has(a)) continue;
-      for (const target of targets) {
-        if (!target.alive) continue;
-        const planet: Dyn = {
-          pos: target.position.clone(),
-          vel: new Vector3(),
-          radius: target.radius,
-          invMass: 0,
-        };
-        if (!resolveContact(bodyA, planet, 0.35)) continue;
-        dead.add(a);
-        bursts.push({ at: a.pos.clone(), vel: a.vel.clone() });
-        break;
-      }
-    }
-    if (dead.size === 0) return false;
-    for (const burst of bursts) {
-      this.particles.spawnExplosion(burst.at, 0xfbbf24, 70);
-      this.particles.spawnExplosion(burst.at.clone().addScaledVector(burst.vel, 0.04), 0xfde68a, 24);
-    }
-    for (let i = this.items.length - 1; i >= 0; i--) {
-      if (!dead.has(this.items[i])) continue;
-      this.dispose(this.items[i]);
-      this.items.splice(i, 1);
-    }
-    return true;
+    this.world.steer(craft.handle, craft.heading.clone().multiplyScalar(craft.speed), dt);
   }
 
   private dispose(craft: Craft): void {
+    this.world.remove(craft.handle);
     const seen = new Set<Material>();
     craft.mesh.traverse((child) => {
       if (!(child instanceof Mesh)) return;

@@ -9,13 +9,14 @@ import {
   RingGeometry,
   SphereGeometry,
   TorusGeometry,
+  Quaternion,
   Vector3,
 } from "three/webgpu";
 import type { Scene } from "three/webgpu";
 import { sfx } from "../audio/sfx";
 import { ParticleSystem } from "../effects/particles";
 import { DeathAct, HistoryStack } from "./history";
-import { Dyn, integrate, resolveContact } from "./physics";
+import { ContactWorld } from "./physics";
 
 export const APPROACH = new Vector3(-0.72, 0.42, -0.56).normalize();
 
@@ -56,6 +57,7 @@ interface MeteorClip {
   scarIndex: number;
   pos: Vector3;
   vel: Vector3;
+  body: number;
 }
 
 interface HoleClip {
@@ -118,16 +120,19 @@ export class ActPlayer<T extends ActBody> {
   private readonly side = new Vector3();
   private readonly center = new Vector3();
   private readonly from = new Vector3();
+  private readonly spin = new Vector3();
+  private readonly rockRot = new Quaternion();
 
   constructor(
     private readonly scene: Scene,
     private readonly planets: Map<string, T>,
     private readonly history: HistoryStack,
     private readonly particles: ParticleSystem,
+    private readonly world: ContactWorld,
     private readonly onHide: (id: string) => void,
     private readonly onShow: (id: string) => void,
     private readonly onSettle: () => void,
-    private readonly spawnDebris: (id: string, at: Vector3, momentum: Vector3) => void,
+    private readonly spawnDebris: (id: string, at: Vector3, momentum: Vector3, spin: Vector3) => void,
     private readonly recallDebris: (id: string) => void,
   ) {}
 
@@ -266,6 +271,18 @@ export class ActPlayer<T extends ActBody> {
     const vel = hit.clone().sub(start);
     if (vel.lengthSq() < 1e-6) vel.copy(APPROACH);
     vel.normalize().multiplyScalar(reverse ? -18 : 18);
+    const radius = Math.max(0.7, reach * 0.34);
+    const body = this.world.spawnDynamic({
+      kind: "meteor",
+      tag: planetId,
+      pos: reverse ? hit : start,
+      linvel: vel,
+      angvel: new Vector3(1.4, 2.6, 0.8),
+      half: new Vector3(radius * 0.85, radius * 0.62, radius * 0.74),
+      restitution: 0.2,
+      friction: 0.7,
+      ccd: true,
+    });
     this.clip = {
       kind: "meteor",
       reverse,
@@ -281,6 +298,7 @@ export class ActPlayer<T extends ActBody> {
       scarIndex: saved?.scarIndex ?? -1,
       pos: reverse ? hit : start,
       vel,
+      body,
     };
     this.statusHint = reverse ? "운석이 되돌아 나갑니다." : "운석이 날아와 부딪힙니다.";
     if (reverse) this.recallDebris(planetId);
@@ -289,6 +307,7 @@ export class ActPlayer<T extends ActBody> {
   private stepMeteor(clip: MeteorClip, dt: number): void {
     const planet = this.body(clip.planetId);
     if (!planet) {
+      this.world.remove(clip.body);
       this.disposeGroup(clip.rock);
       this.finish("행성을 찾지 못했습니다.");
       return;
@@ -296,26 +315,19 @@ export class ActPlayer<T extends ActBody> {
     clip.t += dt;
     const center = this.orbitalCenter(planet);
     const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
-    const rock: Dyn = { pos: clip.pos, vel: clip.vel, radius: Math.max(0.7, reach * 0.34), invMass: 1 };
-    const surface: Dyn = { pos: center.clone(), vel: new Vector3(), radius: reach, invMass: 0 };
-    let contact = false;
-    const steps = 4;
-    const h = dt / steps;
-    for (let i = 0; i < steps; i++) {
-      integrate(rock, new Vector3(), h);
-      if (resolveContact(rock, surface, 0.18)) {
-        contact = true;
-        break;
-      }
+    const pose = this.world.read(clip.body);
+    if (pose) {
+      clip.pos.copy(pose.pos);
+      clip.vel.copy(pose.linvel);
+      this.spin.copy(pose.angvel);
+      this.rockRot.copy(pose.rot);
     }
     clip.rock.position.copy(clip.pos);
+    clip.rock.quaternion.copy(this.rockRot);
     clip.rock.scale.setScalar(Math.max(1.05, reach * 0.62));
-    clip.rock.lookAt(clip.pos.clone().add(clip.vel));
-    clip.rock.rotateZ(clip.t * 5);
-    const flown = clip.vel.length() * clip.t;
-    const span = 18 + reach;
-    const u = Math.min(1, flown / span);
+    const dist = clip.pos.distanceTo(center);
     if (clip.reverse) {
+      const u = Math.min(1, Math.max(0, (dist - reach) / 18));
       planet.eOffset = clip.eAfter + (clip.eBefore - clip.eAfter) * u;
       planet.mOffset = clip.mAfter + (clip.mBefore - clip.mAfter) * u;
       const scar = clip.scarIndex >= 0 ? planet.scars[clip.scarIndex] : undefined;
@@ -324,18 +336,22 @@ export class ActPlayer<T extends ActBody> {
       if (clip.scarIndex >= 0) this.removeScar(planet, clip.scarIndex);
       planet.eOffset = clip.eBefore;
       planet.mOffset = clip.mBefore;
+      this.world.remove(clip.body);
       this.disposeGroup(clip.rock);
       this.finish(clip.fast ? "파편이 모여 운석이 빠져나갔습니다." : "운석이 빠지고 흉터가 사라졌습니다.");
       return;
     }
+    const contact = this.world.partners(clip.body).some((partner) => partner.kind === "planet" && partner.tag === planet.id);
     if (!contact && clip.t < clip.dur) return;
     const at = clip.pos.clone();
     const momentum = clip.vel.clone();
+    const spin = this.spin.clone();
+    this.world.remove(clip.body);
     this.disposeGroup(clip.rock);
     sfx.playImpact();
     this.particles.spawnExplosion(at, clip.fast ? 0xf97316 : planet.color, clip.fast ? 90 : 40);
     if (clip.fast) {
-      this.spawnDebris(planet.id, at, momentum);
+      this.spawnDebris(planet.id, at, momentum, spin);
       this.history.push({
         kind: "impact",
         planetId: planet.id,
@@ -348,7 +364,7 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     const scarIndex = this.addScar(planet);
-    this.spawnDebris(planet.id, at, momentum);
+    this.spawnDebris(planet.id, at, momentum, spin);
     this.history.push({
       kind: "impact",
       planetId: planet.id,
@@ -441,7 +457,7 @@ export class ActPlayer<T extends ActBody> {
     this.markGone(planet, "blackhole");
     const inward = holePos.clone().sub(center);
     if (inward.lengthSq() < 1e-6) inward.set(1, 0, 0);
-    this.spawnDebris(planet.id, holePos, inward.normalize().multiplyScalar(8));
+    this.spawnDebris(planet.id, holePos, inward.normalize().multiplyScalar(8), new Vector3(2.4, 5.5, 1.6));
     if (clip.record) {
       this.history.push({ kind: "destroy", planetId: planet.id, act: "blackhole" });
       sfx.playDestroy();
@@ -582,7 +598,7 @@ export class ActPlayer<T extends ActBody> {
       this.finish("광선이 걷히고 행성이 돌아왔습니다.");
       return;
     }
-    this.spawnDebris(planet.id, center, momentum);
+    this.spawnDebris(planet.id, center, momentum, new Vector3(momentum.y, 4, -momentum.x));
     this.markGone(planet, "laser");
     if (clip.record) {
       this.history.push({ kind: "destroy", planetId: planet.id, act: "laser" });
@@ -704,4 +720,51 @@ export class ActPlayer<T extends ActBody> {
     });
     this.scene.remove(group);
   }
+}
+
+interface Dyn {
+  pos: Vector3;
+  vel: Vector3;
+  radius: number;
+  invMass: number;
+}
+
+function integrate(body: Dyn, acc: Vector3, dt: number): void {
+  body.vel.addScaledVector(acc, dt);
+  body.pos.addScaledVector(body.vel, dt);
+}
+
+function resolveContact(a: Dyn, b: Dyn, restitution: number): boolean {
+  const nx = b.pos.x - a.pos.x;
+  const ny = b.pos.y - a.pos.y;
+  const nz = b.pos.z - a.pos.z;
+  const distSq = nx * nx + ny * ny + nz * nz;
+  const limit = a.radius + b.radius;
+  if (distSq > limit * limit) return false;
+  const dist = Math.sqrt(Math.max(distSq, 1e-12));
+  const ix = nx / dist;
+  const iy = ny / dist;
+  const iz = nz / dist;
+  const rel = (b.vel.x - a.vel.x) * ix + (b.vel.y - a.vel.y) * iy + (b.vel.z - a.vel.z) * iz;
+  const inv = a.invMass + b.invMass;
+  const pen = limit - dist;
+  if (inv > 0 && pen > 0) {
+    const corr = pen / inv;
+    a.pos.x -= ix * corr * a.invMass;
+    a.pos.y -= iy * corr * a.invMass;
+    a.pos.z -= iz * corr * a.invMass;
+    b.pos.x += ix * corr * b.invMass;
+    b.pos.y += iy * corr * b.invMass;
+    b.pos.z += iz * corr * b.invMass;
+  }
+  if (inv > 0 && rel < 0) {
+    const j = (-(1 + restitution) * rel) / inv;
+    a.vel.x -= ix * j * a.invMass;
+    a.vel.y -= iy * j * a.invMass;
+    a.vel.z -= iz * j * a.invMass;
+    b.vel.x += ix * j * b.invMass;
+    b.vel.y += iy * j * b.invMass;
+    b.vel.z += iz * j * b.invMass;
+  }
+  return true;
 }

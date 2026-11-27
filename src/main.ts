@@ -20,6 +20,7 @@ import { ambient } from "./audio/ambience";
 import { CameraMode, CameraRig } from "./camera/cameraRig";
 import { PLANETS } from "./data/planets";
 import { EclipseKind, SolarSystem, ToolMode } from "./sim/solarSystem";
+import { initPhysics } from "./sim/physics";
 import { ToolPalette } from "./ui/toolPalette";
 import { LabelLayer } from "./render/labels";
 import { BOOT_WEIGHT, BootScreen, afterPaint, bootTotal } from "./ui/bootScreen";
@@ -43,6 +44,7 @@ void boot().catch((err: unknown) => {
 async function boot(): Promise<void> {
   loading.advance("singularity", BOOT_WEIGHT.runtime);
   await afterPaint();
+  await initPhysics();
 
   const scene = new Scene();
   const ambient = new AmbientLight(0x93a4c4, 0.04);

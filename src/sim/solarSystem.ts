@@ -1,6 +1,7 @@
 import {
   BufferAttribute,
   BufferGeometry,
+  BoxGeometry,
   DirectionalLight,
   Group,
   Line,
@@ -10,8 +11,6 @@ import {
   MeshStandardMaterial,
   Object3D,
   PerspectiveCamera,
-  Points,
-  PointsMaterial,
   SphereGeometry,
   Vector3,
 } from "three/webgpu";
@@ -29,6 +28,7 @@ import type { AtmoFade } from "../render/surfaces";
 import { ActPlayer, APPROACH } from "./acts";
 import type { ActBody } from "./acts";
 import { CraftField } from "./craft";
+import { ContactWorld } from "./physics";
 import { HistoryStack } from "./history";
 import type { BodySnapshot, DeathAct, ScarPoint, SimAction } from "./history";
 import {
@@ -64,10 +64,9 @@ interface PlanetRuntime extends ActBody {
   auDistance: number;
 }
 
-interface DebrisBurst {
-  positions: Float32Array;
-  velocities: Float32Array;
-  points: Points;
+interface DebrisChunk {
+  handle: number;
+  mesh: Mesh;
   life: number;
   fade: number;
   planetId: string;
@@ -100,9 +99,11 @@ export class SolarSystem {
 
   readonly acts: ActPlayer<PlanetRuntime>;
   readonly craft: CraftField;
+  readonly physics = new ContactWorld();
+  private readonly chunkGeo = new BoxGeometry(0.5, 0.34, 0.42);
 
   private appliedScale = 1;
-  private readonly debris: DebrisBurst[] = [];
+  private readonly debris: DebrisChunk[] = [];
   private focusId: string | null = null;
   private readonly previewHit: Mesh;
   private readonly previewLine: Line;
@@ -126,7 +127,9 @@ export class SolarSystem {
     this.scene = scene;
     this.labels = labels;
     this.particles = new ParticleSystem(scene);
-    this.craft = new CraftField(this.root, this.particles);
+    this.craft = new CraftField(this.root, this.particles, this.physics, (at, linvel, angvel) => {
+      this.spawnDebris(null, at, false, linvel, angvel, "craft");
+    });
     scene.add(this.root);
 
     const sunGeo = new SphereGeometry(sunRadiusSceneUnits(), 48, 48);
@@ -185,12 +188,13 @@ export class SolarSystem {
       this.planets,
       this.history,
       this.particles,
+      this.physics,
       (id) => this.hideBody(id),
       (id) => this.showBody(id),
       () => this.updateSelectionVisuals(),
-      (id, at, momentum) => {
+      (id, at, momentum, spin) => {
         const planet = this.planets.get(id);
-        if (planet) this.spawnDebris(planet, at, false, momentum);
+        if (planet) this.spawnDebris(planet, at, false, momentum, spin);
       },
       (id) => this.recallDebris(id),
     );
@@ -544,67 +548,69 @@ export class SolarSystem {
     while (planet.scars.length > 0) this.removeScar(planet, planet.scars.length - 1);
   }
 
-  private spawnDebris(planet: PlanetRuntime, origin: Vector3, home: boolean, momentum?: Vector3 | null): void {
-    const count = 16;
-    const positions = new Float32Array(count * 3);
-    const velocities = new Float32Array(count * 3);
+  private spawnDebris(
+    planet: PlanetRuntime | null,
+    origin: Vector3,
+    home: boolean,
+    momentum?: Vector3 | null,
+    spin?: Vector3 | null,
+    planetId = planet?.id ?? "craft",
+  ): void {
+    const count = 10;
+    const base = momentum ?? new Vector3(APPROACH.x * -2, APPROACH.y * -2, APPROACH.z * -2);
+    const tumble = spin ?? new Vector3(1.5, 2.4, 0.8);
     for (let i = 0; i < count; i++) {
-      const dir = new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+      const dir = new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+      if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
+      dir.normalize();
       const speed = 3.5 + Math.random() * 6;
-      const radius = home ? 2.4 + Math.random() * 2.2 : 0;
-      positions[i * 3] = origin.x + dir.x * radius;
-      positions[i * 3 + 1] = origin.y + dir.y * radius;
-      positions[i * 3 + 2] = origin.z + dir.z * radius;
       const sign = home ? -1 : 1;
-      const mx = momentum ? momentum.x : APPROACH.x * -2;
-      const my = momentum ? momentum.y : APPROACH.y * -2;
-      const mz = momentum ? momentum.z : APPROACH.z * -2;
-      velocities[i * 3] = dir.x * speed * sign + mx;
-      velocities[i * 3 + 1] = dir.y * speed * sign + my;
-      velocities[i * 3 + 2] = dir.z * speed * sign + mz;
+      const gap = home ? 2.4 + Math.random() * 2.2 : 0.35;
+      const pos = origin.clone().addScaledVector(dir, gap);
+      const linvel = dir.clone().multiplyScalar(speed * sign).add(base);
+      const angvel = tumble.clone().add(new Vector3(Math.random() * 4, Math.random() * 4, Math.random() * 4));
+      const handle = this.physics.spawnDynamic({
+        kind: "debris",
+        tag: planetId,
+        pos,
+        linvel,
+        angvel,
+        half: new Vector3(0.25, 0.17, 0.21),
+        restitution: 0.45,
+        friction: 0.55,
+        ccd: false,
+      });
+      const mesh = new Mesh(
+        this.chunkGeo,
+        new MeshStandardMaterial({ color: 0xfdba74, roughness: 0.8, metalness: 0.05, transparent: true }),
+      );
+      mesh.position.copy(pos);
+      this.scene.add(mesh);
+      this.debris.push({ handle, mesh, life: 0, fade: home ? 1.3 : 1.5, planetId });
     }
-    const geo = new BufferGeometry();
-    geo.setAttribute("position", new BufferAttribute(positions, 3));
-    const points = new Points(
-      geo,
-      new PointsMaterial({
-        color: 0xfdba74,
-        size: 2.6,
-        sizeAttenuation: false,
-        transparent: true,
-      }),
-    );
-    this.scene.add(points);
-    this.debris.push({
-      positions,
-      velocities,
-      points,
-      life: 0,
-      fade: home ? 1.3 : 1.5,
-      planetId: planet.id,
-    });
   }
 
   private recallDebris(id: string): void {
     const planet = this.planets.get(id);
     if (!planet) return;
-    const live = this.debris.filter((burst) => burst.planetId === id);
+    const live = this.debris.filter((chunk) => chunk.planetId === id);
     if (live.length === 0) {
       this.spawnDebris(planet, planet.mesh.position.clone(), true);
       return;
     }
-    for (const burst of live) {
-      burst.life = 0;
-      burst.fade = 1.3;
-      for (let p = 0; p < burst.velocities.length; p++) burst.velocities[p] *= -1;
+    for (const chunk of live) {
+      chunk.life = 0;
+      chunk.fade = 1.3;
+      this.physics.reverseVelocity(chunk.handle);
     }
   }
 
   private clearDebris(): void {
-    for (const burst of this.debris) {
-      this.scene.remove(burst.points);
-      burst.points.geometry.dispose();
-      (burst.points.material as PointsMaterial).dispose();
+    for (const chunk of this.debris) {
+      this.physics.remove(chunk.handle);
+      this.scene.remove(chunk.mesh);
+      const mat = chunk.mesh.material;
+      if (mat instanceof MeshStandardMaterial) mat.dispose();
     }
     this.debris.length = 0;
   }
@@ -797,39 +803,35 @@ export class SolarSystem {
     this.moonLight.intensity = 2.2 * (1 - 0.94 * this.lunarCover);
   }
 
+  private nudgeDebris(dt: number): void {
+    if (dt <= 0) return;
+    for (const chunk of this.debris) {
+      const planet = this.planets.get(chunk.planetId);
+      const pose = this.physics.read(chunk.handle);
+      if (!planet || !pose) continue;
+      const acc = planet.mesh.position.clone().sub(pose.pos);
+      const d2 = Math.max(acc.lengthSq(), 0.4);
+      acc.multiplyScalar(8 / d2);
+      this.physics.applyAccel(chunk.handle, acc, dt);
+    }
+  }
+
   private stepDebris(dt: number): void {
     for (let i = this.debris.length - 1; i >= 0; i--) {
-      const burst = this.debris[i];
-      burst.life += dt;
-      const planet = this.planets.get(burst.planetId);
-      const center = planet?.mesh.position;
-      const attr = burst.points.geometry.getAttribute("position") as BufferAttribute;
-      for (let p = 0; p < burst.positions.length; p += 3) {
-        if (center) {
-          const dx = center.x - burst.positions[p];
-          const dy = center.y - burst.positions[p + 1];
-          const dz = center.z - burst.positions[p + 2];
-          const d2 = dx * dx + dy * dy + dz * dz;
-          const pull = 8 / Math.max(d2, 0.4);
-          burst.velocities[p] += dx * pull * dt;
-          burst.velocities[p + 1] += dy * pull * dt;
-          burst.velocities[p + 2] += dz * pull * dt;
-        }
-        burst.positions[p] += burst.velocities[p] * dt;
-        burst.positions[p + 1] += burst.velocities[p + 1] * dt;
-        burst.positions[p + 2] += burst.velocities[p + 2] * dt;
-        attr.setXYZ(p / 3, burst.positions[p], burst.positions[p + 1], burst.positions[p + 2]);
+      const chunk = this.debris[i];
+      chunk.life += dt;
+      const pose = this.physics.read(chunk.handle);
+      if (pose) {
+        chunk.mesh.position.copy(pose.pos);
+        chunk.mesh.quaternion.copy(pose.rot);
       }
-      attr.needsUpdate = true;
-      const mat = burst.points.material as PointsMaterial;
-      mat.opacity = Math.max(0, 1 - burst.life / burst.fade);
-      mat.transparent = true;
-      if (burst.life >= burst.fade) {
-        this.scene.remove(burst.points);
-        burst.points.geometry.dispose();
-        mat.dispose();
-        this.debris.splice(i, 1);
-      }
+      const mat = chunk.mesh.material;
+      if (mat instanceof MeshStandardMaterial) mat.opacity = Math.max(0, 1 - chunk.life / chunk.fade);
+      if (chunk.life < chunk.fade) continue;
+      this.physics.remove(chunk.handle);
+      this.scene.remove(chunk.mesh);
+      if (mat instanceof MeshStandardMaterial) mat.dispose();
+      this.debris.splice(i, 1);
     }
   }
 
@@ -850,16 +852,18 @@ export class SolarSystem {
     }
     this.stepMoon(dt);
     this.applyEclipse();
+    for (const planet of this.planets.values()) {
+      const radius = planet.radius * Math.max(planet.layoutScale, 0.35) * Math.max(planet.visualScale, 0.2);
+      this.physics.syncPlanet(planet.id, planet.mesh.position, radius, !planet.destroyed);
+    }
+    const motion = this.paused ? 0 : dt * Math.min(Math.max(this.appliedScale, 0.25), 4);
+    this.craft.preStep(motion, this.paused);
+    this.nudgeDebris(dt);
+    this.physics.step(dt);
+    this.craft.postStep();
+    this.acts.step(dt);
     this.stepDebris(dt);
     this.particles.update(dt);
-    this.acts.step(dt);
-    const targets = [...this.planets.values()].map((planet) => ({
-      position: planet.mesh.position,
-      radius: planet.radius * Math.max(planet.layoutScale, 0.35) * Math.max(planet.visualScale, 0.2),
-      alive: !planet.destroyed,
-    }));
-    const motion = this.paused ? 0 : dt * Math.min(Math.max(this.appliedScale, 0.25), 4);
-    this.craft.update(motion, targets);
     this.updatePreview();
   }
 
