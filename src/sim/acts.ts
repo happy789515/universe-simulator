@@ -15,6 +15,7 @@ import type { Scene } from "three/webgpu";
 import { sfx } from "../audio/sfx";
 import { ParticleSystem } from "../effects/particles";
 import { DeathAct, HistoryStack } from "./history";
+import { Dyn, integrate, resolveContact } from "./physics";
 
 export const APPROACH = new Vector3(-0.72, 0.42, -0.56).normalize();
 
@@ -53,6 +54,8 @@ interface MeteorClip {
   eAfter: number;
   mAfter: number;
   scarIndex: number;
+  pos: Vector3;
+  vel: Vector3;
 }
 
 interface HoleClip {
@@ -63,6 +66,8 @@ interface HoleClip {
   dur: number;
   hole: Group;
   record: boolean;
+  pos: Vector3;
+  vel: Vector3;
 }
 
 interface LaserClip {
@@ -72,8 +77,11 @@ interface LaserClip {
   t: number;
   dur: number;
   beam: Mesh;
-  bits: { mesh: Mesh; dir: Vector3 }[];
+  bits: { mesh: Mesh; dir: Vector3; vel: Vector3 }[];
   record: boolean;
+  pos: Vector3;
+  vel: Vector3;
+  struck: boolean;
 }
 
 interface RewindClip {
@@ -110,7 +118,6 @@ export class ActPlayer<T extends ActBody> {
   private readonly side = new Vector3();
   private readonly center = new Vector3();
   private readonly from = new Vector3();
-  private readonly to = new Vector3();
 
   constructor(
     private readonly scene: Scene,
@@ -120,7 +127,7 @@ export class ActPlayer<T extends ActBody> {
     private readonly onHide: (id: string) => void,
     private readonly onShow: (id: string) => void,
     private readonly onSettle: () => void,
-    private readonly spawnDebris: (id: string, at: Vector3) => void,
+    private readonly spawnDebris: (id: string, at: Vector3, momentum: Vector3) => void,
     private readonly recallDebris: (id: string) => void,
   ) {}
 
@@ -252,22 +259,31 @@ export class ActPlayer<T extends ActBody> {
     }
     const rock = this.createRock();
     this.scene.add(rock);
+    const center = this.orbitalCenter(planet);
+    const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
+    const hit = center.clone().addScaledVector(APPROACH, reach);
+    const start = center.clone().addScaledVector(APPROACH, 18 + reach);
+    const vel = hit.clone().sub(start);
+    if (vel.lengthSq() < 1e-6) vel.copy(APPROACH);
+    vel.normalize().multiplyScalar(reverse ? -18 : 18);
     this.clip = {
       kind: "meteor",
       reverse,
       planetId,
       fast,
       t: 0,
-      dur: reverse ? 1.35 : 1.6,
+      dur: 4.2,
       rock,
       eBefore: saved?.eOffset ?? planet.eOffset,
       mBefore: saved?.mOffset ?? planet.mOffset,
       eAfter: planet.eOffset,
       mAfter: planet.mOffset,
       scarIndex: saved?.scarIndex ?? -1,
+      pos: reverse ? hit : start,
+      vel,
     };
     this.statusHint = reverse ? "운석이 되돌아 나갑니다." : "운석이 날아와 부딪힙니다.";
-    if (reverse && fast) this.recallDebris(planetId);
+    if (reverse) this.recallDebris(planetId);
   }
 
   private stepMeteor(clip: MeteorClip, dt: number): void {
@@ -278,25 +294,33 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     clip.t += dt;
-    const u = Math.min(1, clip.t / clip.dur);
-    const eased = smooth(u);
-    const travel = clip.reverse ? 1 - eased : eased;
     const center = this.orbitalCenter(planet);
     const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
-    const hit = this.to.copy(center).addScaledVector(APPROACH, reach);
-    const start = this.from.copy(center).addScaledVector(APPROACH, 18 + reach);
-    clip.rock.position.lerpVectors(start, hit, travel);
-    clip.rock.scale.setScalar(Math.max(1.05, reach * 0.62));
-    clip.rock.lookAt(hit);
-    clip.rock.rotateZ(clip.t * 5);
-    if (clip.reverse) {
-      planet.eOffset = clip.eAfter + (clip.eBefore - clip.eAfter) * eased;
-      planet.mOffset = clip.mAfter + (clip.mBefore - clip.mAfter) * eased;
-      const scar = clip.scarIndex >= 0 ? planet.scars[clip.scarIndex] : undefined;
-      if (scar) scar.scale.setScalar(Math.max(0.001, 1 - eased));
+    const rock: Dyn = { pos: clip.pos, vel: clip.vel, radius: Math.max(0.7, reach * 0.34), invMass: 1 };
+    const surface: Dyn = { pos: center.clone(), vel: new Vector3(), radius: reach, invMass: 0 };
+    let contact = false;
+    const steps = 4;
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      integrate(rock, new Vector3(), h);
+      if (resolveContact(rock, surface, 0.18)) {
+        contact = true;
+        break;
+      }
     }
-    if (u < 1) return;
+    clip.rock.position.copy(clip.pos);
+    clip.rock.scale.setScalar(Math.max(1.05, reach * 0.62));
+    clip.rock.lookAt(clip.pos.clone().add(clip.vel));
+    clip.rock.rotateZ(clip.t * 5);
+    const flown = clip.vel.length() * clip.t;
+    const span = 18 + reach;
+    const u = Math.min(1, flown / span);
     if (clip.reverse) {
+      planet.eOffset = clip.eAfter + (clip.eBefore - clip.eAfter) * u;
+      planet.mOffset = clip.mAfter + (clip.mBefore - clip.mAfter) * u;
+      const scar = clip.scarIndex >= 0 ? planet.scars[clip.scarIndex] : undefined;
+      if (scar) scar.scale.setScalar(Math.max(0.001, 1 - u));
+      if (u < 1 && clip.t < clip.dur) return;
       if (clip.scarIndex >= 0) this.removeScar(planet, clip.scarIndex);
       planet.eOffset = clip.eBefore;
       planet.mOffset = clip.mBefore;
@@ -304,12 +328,14 @@ export class ActPlayer<T extends ActBody> {
       this.finish(clip.fast ? "파편이 모여 운석이 빠져나갔습니다." : "운석이 빠지고 흉터가 사라졌습니다.");
       return;
     }
-    const at = hit.clone();
+    if (!contact && clip.t < clip.dur) return;
+    const at = clip.pos.clone();
+    const momentum = clip.vel.clone();
     this.disposeGroup(clip.rock);
     sfx.playImpact();
     this.particles.spawnExplosion(at, clip.fast ? 0xf97316 : planet.color, clip.fast ? 90 : 40);
     if (clip.fast) {
-      this.spawnDebris(planet.id, at);
+      this.spawnDebris(planet.id, at, momentum);
       this.history.push({
         kind: "impact",
         planetId: planet.id,
@@ -322,6 +348,7 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     const scarIndex = this.addScar(planet);
+    this.spawnDebris(planet.id, at, momentum);
     this.history.push({
       kind: "impact",
       planetId: planet.id,
@@ -347,8 +374,24 @@ export class ActPlayer<T extends ActBody> {
       planet.visualScale = 0.04;
       planet.mesh.scale.multiplyScalar(0.04);
       this.onShow(planet.id);
+      this.recallDebris(planetId);
     }
-    this.clip = { kind: "hole", reverse, planetId, t: 0, dur, hole, record };
+    const center = this.orbitalCenter(planet);
+    const holePos = center.clone().addScaledVector(sideOf(center, this.side), 7);
+    const vel = center.clone().sub(holePos);
+    if (vel.lengthSq() < 1e-6) vel.set(1, 0, 0);
+    vel.normalize().multiplyScalar(reverse ? 5.5 : 0);
+    this.clip = {
+      kind: "hole",
+      reverse,
+      planetId,
+      t: 0,
+      dur,
+      hole,
+      record,
+      pos: reverse ? holePos : center.clone(),
+      vel,
+    };
     this.statusHint = reverse ? "블랙홀이 행성을 놓아줍니다." : "블랙홀이 행성을 끌어당깁니다.";
   }
 
@@ -360,17 +403,33 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     clip.t += dt;
-    const eased = smooth(Math.min(1, clip.t / clip.dur));
     const center = this.orbitalCenter(planet);
     const holePos = center.clone().addScaledVector(sideOf(center, this.side), 7);
     clip.hole.position.copy(holePos);
     clip.hole.rotation.y += dt * 1.6;
-    const suck = clip.reverse ? 1 - eased : eased;
-    planet.pull.copy(holePos).sub(center).multiplyScalar(suck);
-    planet.visualScale = Math.max(0.04, 1 - 0.96 * suck);
+    const acc = holePos.clone().sub(clip.pos);
+    const dist = Math.max(acc.length(), 0.55);
+    acc.multiplyScalar((clip.reverse ? -22 : 42) / (dist * dist));
+    const body: Dyn = {
+      pos: clip.pos,
+      vel: clip.vel,
+      radius: Math.max(0.45, planet.radius * Math.max(planet.layoutScale, 0.35) * 0.22),
+      invMass: 1,
+    };
+    const mouth: Dyn = { pos: holePos, vel: new Vector3(), radius: 1.2, invMass: 0 };
+    let contact = false;
+    const h = dt / 4;
+    for (let i = 0; i < 4; i++) {
+      integrate(body, acc, h);
+      if (resolveContact(body, mouth, 0.05)) contact = true;
+    }
+    planet.pull.copy(clip.pos).sub(center);
+    const gap = clip.pos.distanceTo(holePos);
+    planet.visualScale = Math.max(0.04, Math.min(1, gap / 7));
     planet.mesh.visible = true;
-    planet.mesh.rotation.y += dt * 4;
-    if (clip.t < clip.dur) return;
+    planet.mesh.rotation.y += dt * (2 + clip.vel.length() * 0.15);
+    const done = clip.reverse ? gap > 6.4 || clip.t >= clip.dur + 1.2 : contact || clip.t >= clip.dur + 1.4;
+    if (!done) return;
     this.disposeGroup(clip.hole);
     planet.pull.set(0, 0, 0);
     if (clip.reverse) {
@@ -380,6 +439,9 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     this.markGone(planet, "blackhole");
+    const inward = holePos.clone().sub(center);
+    if (inward.lengthSq() < 1e-6) inward.set(1, 0, 0);
+    this.spawnDebris(planet.id, holePos, inward.normalize().multiplyScalar(8));
     if (clip.record) {
       this.history.push({ kind: "destroy", planetId: planet.id, act: "blackhole" });
       sfx.playDestroy();
@@ -404,7 +466,7 @@ export class ActPlayer<T extends ActBody> {
     );
     beam.frustumCulled = false;
     this.scene.add(beam);
-    const bits: { mesh: Mesh; dir: Vector3 }[] = [];
+    const bits: { mesh: Mesh; dir: Vector3; vel: Vector3 }[] = [];
     for (let i = 0; i < 10; i++) {
       const dir = new Vector3(Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5).normalize();
       const mesh = new Mesh(
@@ -413,7 +475,7 @@ export class ActPlayer<T extends ActBody> {
       );
       mesh.visible = false;
       this.scene.add(mesh);
-      bits.push({ mesh, dir });
+      bits.push({ mesh, dir, vel: new Vector3() });
     }
     if (reverse) {
       planet.destroyed = false;
@@ -421,8 +483,37 @@ export class ActPlayer<T extends ActBody> {
       planet.visualScale = 0.04;
       planet.mesh.scale.multiplyScalar(0.04);
       this.onShow(planet.id);
+      this.recallDebris(planetId);
     }
-    this.clip = { kind: "laser", reverse, planetId, t: 0, dur, beam, bits, record };
+    const center = this.orbitalCenter(planet);
+    const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
+    const from = center.clone();
+    from.y += 16 + reach;
+    const to = center.clone();
+    to.y += reach;
+    const vel = to.clone().sub(from);
+    if (vel.lengthSq() < 1e-6) vel.set(0, -1, 0);
+    vel.normalize().multiplyScalar(reverse ? -26 : 26);
+    if (reverse) {
+      for (const bit of bits) {
+        bit.mesh.position.copy(to).addScaledVector(bit.dir, 5);
+        bit.mesh.visible = true;
+        bit.vel.copy(bit.dir).multiplyScalar(-7);
+      }
+    }
+    this.clip = {
+      kind: "laser",
+      reverse,
+      planetId,
+      t: 0,
+      dur,
+      beam,
+      bits,
+      record,
+      pos: reverse ? to : from,
+      vel,
+      struck: reverse,
+    };
     this.statusHint = reverse ? "광선이 되감기며 행성이 복원됩니다." : "광선이 행성을 태웁니다.";
   }
 
@@ -435,26 +526,54 @@ export class ActPlayer<T extends ActBody> {
       return;
     }
     clip.t += dt;
-    const eased = smooth(Math.min(1, clip.t / clip.dur));
     const center = this.orbitalCenter(planet);
     const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
     const from = this.from.copy(center);
     from.y += 16 + reach;
-    const to = this.to.copy(center);
-    to.y += reach;
-    const beamGrow = clip.reverse ? 1 - eased : Math.min(1, eased / 0.28);
-    this.aimBeam(clip.beam, from, to, beamGrow);
-    const burn = clip.reverse ? eased : Math.max(0, (eased - 0.18) / 0.82);
-    planet.visualScale = clip.reverse ? Math.max(0.04, burn) : Math.max(0.04, 1 - 0.96 * burn);
+    const surface: Dyn = { pos: center.clone(), vel: new Vector3(), radius: reach, invMass: 0 };
+    const bolt: Dyn = { pos: clip.pos, vel: clip.vel, radius: 0.35, invMass: 1 };
+    if (!clip.struck) {
+      const h = dt / 4;
+      for (let i = 0; i < 4; i++) {
+        integrate(bolt, new Vector3(), h);
+        if (resolveContact(bolt, surface, 0.05)) {
+          clip.struck = true;
+          for (const bit of clip.bits) {
+            bit.mesh.position.copy(clip.pos);
+            bit.mesh.visible = true;
+            bit.vel.copy(clip.vel).multiplyScalar(0.45).addScaledVector(bit.dir, 4 + Math.random() * 3);
+            if (clip.reverse) bit.vel.multiplyScalar(-1);
+          }
+          break;
+        }
+      }
+    }
+    const beamTip = clip.struck ? center : clip.pos;
+    this.aimBeam(clip.beam, from, beamTip, clip.struck || clip.reverse ? 1 : Math.min(1, clip.t / 0.25));
+    if (clip.struck) {
+      for (const bit of clip.bits) {
+        const spec: Dyn = { pos: bit.mesh.position, vel: bit.vel, radius: 0.14, invMass: 1 };
+        integrate(spec, new Vector3(), dt);
+        bit.mesh.visible = true;
+      }
+    }
+    const travel = Math.min(1, clip.t / clip.dur);
+    planet.visualScale = clip.reverse
+      ? Math.max(0.04, clip.struck ? travel : 0.04)
+      : Math.max(0.04, clip.struck ? 1 - 0.96 * Math.min(1, (clip.t / clip.dur)) : 1);
     planet.mesh.visible = true;
     planet.material.emissive.setHex(0xf8fafc);
-    planet.material.emissiveIntensity = (clip.reverse ? 1 - eased : beamGrow) * 1.5;
-    for (const bit of clip.bits) {
-      const travel = clip.reverse ? 1 - burn : burn;
-      bit.mesh.visible = travel > 0.02;
-      bit.mesh.position.copy(center).addScaledVector(bit.dir, 0.3 + travel * (3.4 + reach));
+    planet.material.emissiveIntensity = (clip.struck ? 1 : 0.35) * 1.5;
+    if (clip.reverse) {
+      if (clip.t < clip.dur) return;
+    } else if (!clip.struck || clip.t < 0.95) {
+      if (!clip.struck && clip.t > clip.dur) {
+        clip.pos.copy(center);
+        clip.struck = true;
+      }
+      return;
     }
-    if (clip.t < clip.dur) return;
+    const momentum = clip.vel.clone();
     this.disposeMesh(clip.beam);
     for (const bit of clip.bits) this.disposeMesh(bit.mesh);
     if (clip.reverse) {
@@ -463,6 +582,7 @@ export class ActPlayer<T extends ActBody> {
       this.finish("광선이 걷히고 행성이 돌아왔습니다.");
       return;
     }
+    this.spawnDebris(planet.id, center, momentum);
     this.markGone(planet, "laser");
     if (clip.record) {
       this.history.push({ kind: "destroy", planetId: planet.id, act: "laser" });

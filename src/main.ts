@@ -135,6 +135,8 @@ async function boot(): Promise<void> {
     },
     onUseTool: (planetId, fast) => sim.useTool(planetId, fast),
     onEclipse: (kind: EclipseKind) => sim.playEclipse(kind),
+    onSpawnSatellite: () => sim.spawnSatellite(),
+    onSpawnSpacecraft: () => sim.spawnSpacecraft(),
     onRestoreOne: () => sim.restoreOne(),
     onReset: () => sim.resetAll(),
     onUndo: () => sim.undo(),

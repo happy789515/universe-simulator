@@ -20,6 +20,8 @@ export interface ToolPaletteHandlers {
   onModeChange: (mode: ToolMode) => void;
   onUseTool: (planetId: string, fast: boolean) => void;
   onEclipse: (kind: "solar" | "lunar") => void;
+  onSpawnSatellite: () => void;
+  onSpawnSpacecraft: () => void;
   onRestoreOne: () => void;
   onReset: () => void;
   onUndo: () => void;
@@ -138,6 +140,14 @@ export class ToolPalette {
           <button type="button" class="tool-btn" data-action="solar">개기일식</button>
           <button type="button" class="tool-btn" data-action="lunar">개기월식</button>
         </div>
+      </section>
+      <section class="tool-group">
+        <h3>기체</h3>
+        <div class="btn-row">
+          <button type="button" class="tool-btn" data-action="satellite">위성</button>
+          <button type="button" class="tool-btn" data-action="spacecraft">우주선</button>
+        </div>
+        <p class="scale-note">클릭할 때마다 한 대씩 늘어납니다. 위성은 궤도, 우주선은 속도입니다.</p>
       </section>
       <section class="tool-group">
         <h3>카메라</h3>
@@ -262,6 +272,12 @@ export class ToolPalette {
             break;
           case "lunar":
             this.handlers.onEclipse("lunar");
+            break;
+          case "satellite":
+            this.handlers.onSpawnSatellite();
+            break;
+          case "spacecraft":
+            this.handlers.onSpawnSpacecraft();
             break;
           case "restore":
             this.handlers.onRestoreOne();

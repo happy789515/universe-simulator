@@ -28,6 +28,7 @@ import { createPlanetLook, createSunCorona, createSunMaterial } from "../render/
 import type { AtmoFade } from "../render/surfaces";
 import { ActPlayer, APPROACH } from "./acts";
 import type { ActBody } from "./acts";
+import { CraftField } from "./craft";
 import { HistoryStack } from "./history";
 import type { BodySnapshot, DeathAct, ScarPoint, SimAction } from "./history";
 import {
@@ -98,6 +99,7 @@ export class SolarSystem {
   caption = "";
 
   readonly acts: ActPlayer<PlanetRuntime>;
+  readonly craft: CraftField;
 
   private appliedScale = 1;
   private readonly debris: DebrisBurst[] = [];
@@ -124,6 +126,7 @@ export class SolarSystem {
     this.scene = scene;
     this.labels = labels;
     this.particles = new ParticleSystem(scene);
+    this.craft = new CraftField(this.root, this.particles);
     scene.add(this.root);
 
     const sunGeo = new SphereGeometry(sunRadiusSceneUnits(), 48, 48);
@@ -185,9 +188,9 @@ export class SolarSystem {
       (id) => this.hideBody(id),
       (id) => this.showBody(id),
       () => this.updateSelectionVisuals(),
-      (id, at) => {
+      (id, at, momentum) => {
         const planet = this.planets.get(id);
-        if (planet) this.spawnDebris(planet, at, false);
+        if (planet) this.spawnDebris(planet, at, false, momentum);
       },
       (id) => this.recallDebris(id),
     );
@@ -445,6 +448,7 @@ export class SolarSystem {
         this.eclipse = null;
         this.caption = "";
         this.clearDebris();
+        this.craft.clear();
         this.selectedIds.clear();
         this.acts.resultHint = "파괴를 역순으로 되돌리고 궤도를 되감았습니다.";
         this.updateSelectionVisuals();
@@ -488,6 +492,18 @@ export class SolarSystem {
     }
   }
 
+  spawnSatellite(): void {
+    if (this.blocked()) return;
+    const count = this.craft.spawnSatellite();
+    this.acts.resultHint = `위성 ${count}대가 궤도를 돕니다.`;
+  }
+
+  spawnSpacecraft(): void {
+    if (this.blocked()) return;
+    const count = this.craft.spawnSpacecraft();
+    this.acts.resultHint = `우주선 ${count}대가 속도로 이동합니다.`;
+  }
+
   private blocked(): boolean {
     if (this.acts.busy || this.eclipse) {
       this.playHint = "재생이 끝난 뒤 다시 누르세요.";
@@ -528,7 +544,7 @@ export class SolarSystem {
     while (planet.scars.length > 0) this.removeScar(planet, planet.scars.length - 1);
   }
 
-  private spawnDebris(planet: PlanetRuntime, origin: Vector3, home: boolean): void {
+  private spawnDebris(planet: PlanetRuntime, origin: Vector3, home: boolean, momentum?: Vector3 | null): void {
     const count = 16;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
@@ -540,9 +556,12 @@ export class SolarSystem {
       positions[i * 3 + 1] = origin.y + dir.y * radius;
       positions[i * 3 + 2] = origin.z + dir.z * radius;
       const sign = home ? -1 : 1;
-      velocities[i * 3] = dir.x * speed * sign + APPROACH.x * -2;
-      velocities[i * 3 + 1] = dir.y * speed * sign + APPROACH.y * -2;
-      velocities[i * 3 + 2] = dir.z * speed * sign + APPROACH.z * -2;
+      const mx = momentum ? momentum.x : APPROACH.x * -2;
+      const my = momentum ? momentum.y : APPROACH.y * -2;
+      const mz = momentum ? momentum.z : APPROACH.z * -2;
+      velocities[i * 3] = dir.x * speed * sign + mx;
+      velocities[i * 3 + 1] = dir.y * speed * sign + my;
+      velocities[i * 3 + 2] = dir.z * speed * sign + mz;
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(positions, 3));
@@ -834,6 +853,13 @@ export class SolarSystem {
     this.stepDebris(dt);
     this.particles.update(dt);
     this.acts.step(dt);
+    const targets = [...this.planets.values()].map((planet) => ({
+      position: planet.mesh.position,
+      radius: planet.radius * Math.max(planet.layoutScale, 0.35) * Math.max(planet.visualScale, 0.2),
+      alive: !planet.destroyed,
+    }));
+    const motion = this.paused ? 0 : dt * Math.min(Math.max(this.appliedScale, 0.25), 4);
+    this.craft.update(motion, targets);
     this.updatePreview();
   }
 
