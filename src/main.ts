@@ -17,33 +17,60 @@ import { pass } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CameraMode, CameraRig } from "./camera/cameraRig";
+import { PLANETS } from "./data/planets";
 import { SolarSystem, ToolMode } from "./sim/solarSystem";
 import { ToolPalette } from "./ui/toolPalette";
 import { LabelLayer } from "./render/labels";
+import { BOOT_WEIGHT, BootScreen, afterPaint, bootTotal } from "./ui/bootScreen";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
 const hud = document.getElementById("hud")!;
 const app = document.getElementById("app");
+const bootRoot = document.getElementById("boot");
 if (!app) throw new Error("Missing #app");
+if (!bootRoot) throw new Error("Missing #boot");
+const appEl: HTMLElement = app;
 
-const scene = new Scene();
-const ambient = new AmbientLight(0x93a4c4, 0.04);
-ambient.layers.enableAll();
-scene.add(ambient);
-scene.add(createStarfield());
+const loading = new BootScreen(bootRoot, bootTotal(PLANETS.length));
 
-const camera = new PerspectiveCamera(55, 1, 0.1, 2000);
-camera.position.set(0, 55, 95);
-camera.layers.enableAll();
-
-const labels = new LabelLayer(app);
-const sim = new SolarSystem(scene, labels);
-const raycaster = new Raycaster();
-const pointer = new Vector2();
-
-void boot();
+void boot().catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : "알 수 없는 오류";
+  loading.fail(message);
+  console.error(err);
+});
 
 async function boot(): Promise<void> {
+  loading.advance("singularity", BOOT_WEIGHT.runtime);
+  await afterPaint();
+
+  const scene = new Scene();
+  const ambient = new AmbientLight(0x93a4c4, 0.04);
+  ambient.layers.enableAll();
+  scene.add(ambient);
+  scene.add(createStarfield());
+  loading.advance("inflation", BOOT_WEIGHT.starfield);
+  await afterPaint();
+
+  const camera = new PerspectiveCamera(55, 1, 0.1, 2000);
+  camera.position.set(0, 55, 95);
+  camera.layers.enableAll();
+
+  const labels = new LabelLayer(appEl);
+  const sim = new SolarSystem(scene, labels);
+  loading.advance("inflation", BOOT_WEIGHT.sun);
+  await afterPaint();
+
+  const raycaster = new Raycaster();
+  const pointer = new Vector2();
+
+  await sim.buildPlanets(async () => {
+    loading.advance("inflation", BOOT_WEIGHT.planet);
+    await afterPaint();
+  });
+
+  loading.setStage("firstLight");
+  await afterPaint();
+
   const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
   const renderer = new WebGPURenderer({
     canvas,
@@ -56,6 +83,10 @@ async function boot(): Promise<void> {
   renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   await renderer.init();
+  loading.advance("firstLight", BOOT_WEIGHT.gpu);
+
+  loading.setStage("galaxy");
+  await afterPaint();
 
   const backendName =
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
@@ -185,6 +216,12 @@ async function boot(): Promise<void> {
     rig.endPointer(e);
   });
 
+  loading.advance("galaxy", BOOT_WEIGHT.galaxy);
+  await afterPaint();
+  loading.setStage("solar");
+  await afterPaint();
+
+  let opened = false;
   let last = performance.now();
   renderer.setAnimationLoop((now) => {
     const dt = Math.min((now - last) / 1000, 0.05);
@@ -206,6 +243,12 @@ async function boot(): Promise<void> {
 
     sim.layoutLabels(camera, window.innerWidth, window.innerHeight);
     post.render();
+    if (!opened) {
+      opened = true;
+      loading.advance("solar", BOOT_WEIGHT.firstFrame);
+      appEl.setAttribute("aria-busy", "false");
+      loading.finish();
+    }
     hud.textContent = `${sim.getHudText()} · ${rig.statusText()} · ${backendName}`;
   });
 }

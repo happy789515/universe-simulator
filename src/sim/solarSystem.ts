@@ -144,8 +144,13 @@ export class SolarSystem {
     this.previewLine.visible = false;
     this.previewLine.frustumCulled = false;
     this.root.add(this.previewLine);
+  }
 
-    PLANETS.forEach((def, index) => this.createPlanet(def, index));
+  async buildPlanets(onBody: () => void | Promise<void>): Promise<void> {
+    for (const [index, def] of PLANETS.entries()) {
+      this.createPlanet(def, index);
+      await onBody();
+    }
   }
 
   private createPlanet(def: PlanetDefinition, index: number): void {
