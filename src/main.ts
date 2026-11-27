@@ -16,6 +16,7 @@ import {
 import { pass } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { ambient } from "./audio/ambience";
 import { CameraMode, CameraRig } from "./camera/cameraRig";
 import { PLANETS } from "./data/planets";
 import { SolarSystem, ToolMode } from "./sim/solarSystem";
@@ -32,6 +33,7 @@ if (!bootRoot) throw new Error("Missing #boot");
 const appEl: HTMLElement = app;
 
 const loading = new BootScreen(bootRoot, bootTotal(PLANETS.length));
+ambient.bindGesture(bootRoot);
 
 void boot().catch((err: unknown) => {
   const message = err instanceof Error ? err.message : "알 수 없는 오류";

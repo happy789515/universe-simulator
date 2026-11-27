@@ -102,6 +102,10 @@ button.tool-btn.active {
   min-width: 0;
 }
 
+#music-toggle {
+  width: 100%;
+}
+
 .planet-list {
   list-style: none;
   max-height: 12rem;
