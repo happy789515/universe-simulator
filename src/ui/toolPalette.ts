@@ -9,10 +9,17 @@ const CAMERA_HINTS: Record<CameraMode, string> = {
   free: "WASD 이동 · 드래그 시점 · E/Space 상승 · Q/Ctrl 하강 · Shift 가속. 키 1/2/3.",
 };
 
+const MODE_HINTS: Record<ToolMode, string> = {
+  select: "행성을 클릭하면 선택됩니다.",
+  meteor: "다음: 행성을 클릭하세요. 운석이 날아와 부딪힙니다. Shift는 빠른 파편입니다.",
+  blackhole: "다음: 행성을 클릭하세요. 블랙홀이 끌어당긴 뒤 삼킵니다.",
+  laser: "다음: 행성을 클릭하세요. 광선이 행성을 태워 없앱니다.",
+};
+
 export interface ToolPaletteHandlers {
   onModeChange: (mode: ToolMode) => void;
-  onDestroy: () => void;
-  onImpact: () => void;
+  onUseTool: (planetId: string, fast: boolean) => void;
+  onEclipse: (kind: "solar" | "lunar") => void;
   onRestoreOne: () => void;
   onReset: () => void;
   onUndo: () => void;
@@ -37,6 +44,10 @@ export class ToolPalette {
   private pauseBtn!: HTMLButtonElement;
   private musicBtn!: HTMLButtonElement;
   private infoPanel!: PlanetInfoPanel;
+  private toolHint!: HTMLParagraphElement;
+  private captionEl!: HTMLDivElement;
+  private panelToggle!: HTMLButtonElement;
+  private panelOpen = true;
 
   constructor(rootId: string, handlers: ToolPaletteHandlers) {
     const el = document.getElementById(rootId);
@@ -51,9 +62,12 @@ export class ToolPalette {
     const sim = this.handlers.getState();
     this.undoBtn.disabled = !sim.history.canUndo;
 
-    for (const mode of ["select", "destroy", "impact"] as ToolMode[]) {
+    for (const mode of ["select", "meteor", "blackhole", "laser"] as ToolMode[]) {
       this.modeButtons[mode]?.classList.toggle("active", sim.mode === mode);
     }
+    const liveHint = sim.hintText();
+    this.toolHint.textContent = liveHint || MODE_HINTS[sim.mode];
+    this.captionEl.textContent = sim.caption;
 
     const cameraMode = this.handlers.getCameraMode();
     for (const mode of ["orbit", "follow", "free"] as CameraMode[]) {
@@ -83,10 +97,11 @@ export class ToolPalette {
       li.appendChild(document.createTextNode(item.nameKo));
 
       li.addEventListener("click", (e) => {
-        if (e.shiftKey) {
-          this.handlers.onSelectPlanet(item.id);
+        if (sim.mode === "select") {
+          if (e.shiftKey) this.handlers.onSelectPlanet(item.id);
+          else sim.selectOnly(item.id);
         } else {
-          sim.selectOnly(item.id);
+          this.handlers.onUseTool(item.id, e.shiftKey);
         }
         this.refresh();
       });
@@ -111,8 +126,16 @@ export class ToolPalette {
       </section>
       <section class="tool-group" id="planet-info" aria-live="polite"></section>
       <section class="tool-group">
-        <h3>모드</h3>
+        <h3>파괴</h3>
         <div class="btn-row" id="mode-row"></div>
+        <p class="tool-hint" id="tool-hint"></p>
+      </section>
+      <section class="tool-group">
+        <h3>식</h3>
+        <div class="btn-row">
+          <button type="button" class="tool-btn" data-action="solar">개기일식</button>
+          <button type="button" class="tool-btn" data-action="lunar">개기월식</button>
+        </div>
       </section>
       <section class="tool-group">
         <h3>카메라</h3>
@@ -120,10 +143,8 @@ export class ToolPalette {
         <p class="scale-note" id="cam-hint"></p>
       </section>
       <section class="tool-group">
-        <h3>행동</h3>
+        <h3>되돌리기</h3>
         <div class="btn-row">
-          <button type="button" class="tool-btn" data-action="destroy">행성 파괴</button>
-          <button type="button" class="tool-btn" data-action="impact">운석 충돌</button>
           <button type="button" class="tool-btn" data-action="restore">하나 복원</button>
           <button type="button" class="tool-btn" data-action="reset">전체 리셋</button>
           <button type="button" class="tool-btn" id="undo-btn" data-action="undo">실행 취소</button>
@@ -138,7 +159,7 @@ export class ToolPalette {
         </label>
       </section>
       <section class="tool-group">
-        <h3>행성 (Shift+클릭 다중, 더블클릭 포커스)</h3>
+        <h3>행성 (클릭은 현재 도구, 더블클릭 포커스)</h3>
         <ul class="planet-list" id="planet-list"></ul>
         <p class="scale-note">
           궤도·크기는 교육용 로그 스케일입니다. 실제 AU/반지름 비율은 HUD와 README에 표기합니다.
@@ -149,8 +170,9 @@ export class ToolPalette {
     const modeRow = this.root.querySelector("#mode-row")!;
     const modes: { id: ToolMode; label: string }[] = [
       { id: "select", label: "선택" },
-      { id: "destroy", label: "파괴 모드" },
-      { id: "impact", label: "충돌 모드" },
+      { id: "meteor", label: "운석" },
+      { id: "blackhole", label: "블랙홀" },
+      { id: "laser", label: "광선" },
     ];
     for (const m of modes) {
       const btn = document.createElement("button");
@@ -185,7 +207,25 @@ export class ToolPalette {
     }
 
     this.camHint = this.root.querySelector("#cam-hint")!;
+    const hint = this.root.querySelector("#tool-hint");
+    if (!(hint instanceof HTMLParagraphElement)) throw new Error("Missing #tool-hint");
+    this.toolHint = hint;
     this.planetList = this.root.querySelector("#planet-list")!;
+    this.captionEl = document.createElement("div");
+    this.captionEl.className = "event-caption";
+    this.captionEl.setAttribute("aria-live", "polite");
+    document.getElementById("app")?.appendChild(this.captionEl);
+    this.panelToggle = document.createElement("button");
+    this.panelToggle.type = "button";
+    this.panelToggle.id = "panel-toggle";
+    this.panelToggle.addEventListener("click", () => {
+      this.panelOpen = !this.panelOpen;
+      this.root.classList.toggle("is-closed", !this.panelOpen);
+      document.getElementById("app")?.classList.toggle("panel-closed", !this.panelOpen);
+      this.syncPanelToggle();
+    });
+    document.getElementById("app")?.appendChild(this.panelToggle);
+    this.syncPanelToggle();
     const infoRoot = this.root.querySelector("#planet-info");
     if (!(infoRoot instanceof HTMLElement)) {
       throw new Error("Missing #planet-info");
@@ -211,11 +251,11 @@ export class ToolPalette {
       btn.addEventListener("click", () => {
         const action = btn.dataset.action;
         switch (action) {
-          case "destroy":
-            this.handlers.onDestroy();
+          case "solar":
+            this.handlers.onEclipse("solar");
             break;
-          case "impact":
-            this.handlers.onImpact();
+          case "lunar":
+            this.handlers.onEclipse("lunar");
             break;
           case "restore":
             this.handlers.onRestoreOne();
@@ -248,6 +288,12 @@ export class ToolPalette {
       this.handlers.onTimeScale(scale);
       this.refresh();
     });
+  }
+
+  private syncPanelToggle(): void {
+    this.panelToggle.textContent = this.panelOpen ? "패널 닫기" : "패널 열기";
+    this.panelToggle.setAttribute("aria-expanded", String(this.panelOpen));
+    this.panelToggle.setAttribute("aria-controls", "sidebar");
   }
 
   private syncMusicButton(): void {

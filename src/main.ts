@@ -19,7 +19,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ambient } from "./audio/ambience";
 import { CameraMode, CameraRig } from "./camera/cameraRig";
 import { PLANETS } from "./data/planets";
-import { SolarSystem, ToolMode } from "./sim/solarSystem";
+import { EclipseKind, SolarSystem, ToolMode } from "./sim/solarSystem";
 import { ToolPalette } from "./ui/toolPalette";
 import { LabelLayer } from "./render/labels";
 import { BOOT_WEIGHT, BootScreen, afterPaint, bootTotal } from "./ui/bootScreen";
@@ -135,9 +135,11 @@ async function boot(): Promise<void> {
     getState: () => sim,
     onModeChange: (mode: ToolMode) => {
       sim.mode = mode;
+      sim.playHint = "";
+      sim.acts.clearResult();
     },
-    onDestroy: () => sim.destroySelected(),
-    onImpact: () => sim.impactSelected(),
+    onUseTool: (planetId, fast) => sim.useTool(planetId, fast),
+    onEclipse: (kind: EclipseKind) => sim.playEclipse(kind),
     onRestoreOne: () => sim.restoreOne(),
     onReset: () => sim.resetAll(),
     onUndo: () => sim.undo(),
@@ -179,27 +181,23 @@ async function boot(): Promise<void> {
     const id = pickPlanet(e.clientX, e.clientY);
     if (!id) {
       if (!e.shiftKey) sim.clearSelection();
+      if (sim.mode !== "select") sim.playHint = "다음: 행성을 클릭하세요.";
       palette.refresh();
       return;
     }
 
-    if (sim.mode === "destroy") {
+    if (sim.mode === "select") {
       if (e.shiftKey) sim.toggleSelect(id);
       else sim.selectOnly(id);
-      sim.destroySelected();
-    } else if (sim.mode === "impact") {
-      sim.selectOnly(id);
-      sim.impactSelected(e.shiftKey);
     } else {
-      if (e.shiftKey) sim.toggleSelect(id);
-      else sim.selectOnly(id);
+      sim.useTool(id, e.shiftKey);
     }
     palette.refresh();
   }
 
   canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
     if (rig.mode === "free") {
-      if (e.button !== 0) return;
       rig.beginPointer(e);
       return;
     }
@@ -225,10 +223,16 @@ async function boot(): Promise<void> {
 
   let opened = false;
   let last = performance.now();
+  let paletteKey = "";
   renderer.setAnimationLoop((now) => {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     sim.update(dt);
+    const nextKey = `${sim.hintText()}\n${sim.caption}\n${sim.listStates().map((item) => (item.destroyed ? "1" : "0")).join("")}`;
+    if (nextKey !== paletteKey) {
+      paletteKey = nextKey;
+      palette.refresh();
+    }
 
     rig.update(dt, () => {
       const focus = sim.getFocusTarget();

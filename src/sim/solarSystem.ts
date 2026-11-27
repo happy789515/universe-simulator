@@ -22,34 +22,31 @@ import {
   sunRadiusSceneUnits,
 } from "../data/planets";
 import { sfx } from "../audio/sfx";
-import { ParticleSystem, createMeteorMesh } from "../effects/particles";
+import { ParticleSystem } from "../effects/particles";
 import { LabelLayer } from "../render/labels";
 import { createPlanetLook, createSunCorona, createSunMaterial } from "../render/surfaces";
 import type { AtmoFade } from "../render/surfaces";
+import { ActPlayer, APPROACH } from "./acts";
+import type { ActBody } from "./acts";
 import { HistoryStack } from "./history";
-import type { BodySnapshot, ScarPoint } from "./history";
+import type { BodySnapshot, DeathAct, ScarPoint, SimAction } from "./history";
 import {
-  MU_SUN,
   bodyRadiusAu,
   earthExposure,
   isEclipsed,
-  sphereOfInfluence,
   writeOrbitTrail,
   writePlanetAu,
   writePlanetScene,
 } from "./kepler";
-import { orbitRadiusSceneUnits } from "../data/planets";
 
-export type ToolMode = "select" | "destroy" | "impact";
+export type ToolMode = "select" | "meteor" | "blackhole" | "laser";
+export type EclipseKind = "solar" | "lunar";
 
 const TRAIL_STEPS = 128;
-const APPROACH = new Vector3(-0.72, 0.42, -0.56).normalize();
 
-interface PlanetRuntime {
+interface PlanetRuntime extends ActBody {
   def: PlanetDefinition;
   group: Group;
-  mesh: Mesh;
-  material: MeshStandardMaterial;
   orbitLine: Line;
   orbitPositions: Float32Array;
   orbitColors: Float32Array;
@@ -57,26 +54,13 @@ interface PlanetRuntime {
   atmosphere: Mesh | null;
   atmoFade: AtmoFade | null;
   clouds: Mesh | null;
-  destroyed: boolean;
   epoch: number;
-  eOffset: number;
-  mOffset: number;
   spin: number;
-  scars: Mesh[];
   label: HTMLDivElement;
-  radius: number;
   nightEmissive: number;
   nightLevel: number;
   au: Vector3;
   auDistance: number;
-}
-
-interface MeteorFlight {
-  pos: Vector3;
-  vel: Vector3;
-  mesh: Group;
-  fast: boolean;
-  planetId: string;
 }
 
 interface DebrisBurst {
@@ -84,7 +68,17 @@ interface DebrisBurst {
   velocities: Float32Array;
   points: Points;
   life: number;
+  fade: number;
   planetId: string;
+}
+
+interface EclipsePlay {
+  kind: EclipseKind;
+  t: number;
+  move: number;
+  hold: number;
+  from: number;
+  to: number;
 }
 
 export class SolarSystem {
@@ -100,17 +94,30 @@ export class SolarSystem {
   timeScale = 1;
   paused = false;
   simDays = 0;
+  playHint = "";
+  caption = "";
+
+  readonly acts: ActPlayer<PlanetRuntime>;
 
   private appliedScale = 1;
-  private meteor: MeteorFlight | null = null;
   private readonly debris: DebrisBurst[] = [];
   private focusId: string | null = null;
   private readonly previewHit: Mesh;
   private readonly previewLine: Line;
   private readonly labels: LabelLayer;
-  private readonly auScratch = new Vector3();
-  private readonly prevAu = new Vector3();
   private readonly ndc = new Vector3();
+  private readonly moonSide = new Vector3();
+  private moonAngle = 1.15;
+  private moonLocked = false;
+  private eclipse: EclipsePlay | null = null;
+  private solarCover = 0;
+  private lunarCover = 0;
+  private readonly moonMesh: Mesh;
+  private readonly moonMat: MeshStandardMaterial;
+  private readonly moonLight: DirectionalLight;
+  private readonly moonLabel: HTMLDivElement;
+  private readonly umbra: Mesh;
+  private readonly lunarShadow: Mesh;
 
   constructor(scene: Scene, labels: LabelLayer) {
     this.scene = scene;
@@ -144,6 +151,45 @@ export class SolarSystem {
     this.previewLine.visible = false;
     this.previewLine.frustumCulled = false;
     this.root.add(this.previewLine);
+
+    this.moonMat = new MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.95, metalness: 0 });
+    this.moonMesh = new Mesh(new SphereGeometry(0.42, 24, 16), this.moonMat);
+    this.moonMesh.name = "moon";
+    this.moonMesh.layers.set(9);
+    this.moonLight = new DirectionalLight(0xfff3d6, 2.2);
+    this.moonLight.layers.set(9);
+    this.moonLight.target = this.moonMesh;
+    this.root.add(this.moonLight);
+    this.root.add(this.moonMesh);
+    this.moonLabel = labels.create("달");
+
+    this.umbra = new Mesh(
+      new SphereGeometry(1, 20, 12),
+      new MeshBasicMaterial({ color: 0x020617, transparent: true, opacity: 0, depthWrite: false }),
+    );
+    this.umbra.visible = false;
+    this.root.add(this.umbra);
+    this.lunarShadow = new Mesh(
+      new SphereGeometry(0.72, 18, 12),
+      new MeshBasicMaterial({ color: 0x1c0a0a, transparent: true, opacity: 0, depthWrite: false }),
+    );
+    this.lunarShadow.visible = false;
+    this.root.add(this.lunarShadow);
+
+    this.acts = new ActPlayer(
+      scene,
+      this.planets,
+      this.history,
+      this.particles,
+      (id) => this.hideBody(id),
+      (id) => this.showBody(id),
+      () => this.updateSelectionVisuals(),
+      (id, at) => {
+        const planet = this.planets.get(id);
+        if (planet) this.spawnDebris(planet, at, false);
+      },
+      (id) => this.recallDebris(id),
+    );
   }
 
   async buildPlanets(onBody: () => void | Promise<void>): Promise<void> {
@@ -191,6 +237,7 @@ export class SolarSystem {
     group.add(mesh);
 
     const runtime: PlanetRuntime = {
+      id: def.id,
       def,
       group,
       mesh,
@@ -203,6 +250,7 @@ export class SolarSystem {
       atmoFade: look.atmoFade,
       clouds: look.clouds,
       destroyed: false,
+      death: null,
       epoch: (def.meanAnomalyDeg * Math.PI) / 180,
       eOffset: 0,
       mOffset: 0,
@@ -210,6 +258,10 @@ export class SolarSystem {
       scars: [],
       label: this.labels.create(def.nameKo),
       radius: look.radius,
+      color: def.color,
+      visualScale: 1,
+      pull: new Vector3(),
+      layoutScale: 1,
       nightEmissive: look.nightEmissive,
       nightLevel: look.nightLevel,
       au: new Vector3(),
@@ -267,168 +319,193 @@ export class SolarSystem {
     }
   }
 
-  destroyPlanet(planetId: string, recordHistory = true): void {
+  hintText(): string {
+    return this.playHint || this.acts.statusHint || this.acts.resultHint;
+  }
+
+  useTool(planetId: string, fast: boolean): void {
+    if (this.blocked()) return;
     const planet = this.planets.get(planetId);
-    if (!planet || planet.destroyed) return;
-    planet.destroyed = true;
+    if (!planet || planet.destroyed) {
+      this.acts.resultHint = "이미 파괴된 행성입니다. 복원이나 실행 취소를 누르세요.";
+      return;
+    }
+    this.selectOnly(planetId);
+    if (this.mode === "select") return;
+    sfx.prime();
+    this.acts.launch(this.mode, planetId, fast);
+  }
+
+  playEclipse(kind: EclipseKind): void {
+    if (this.blocked()) return;
+    const earth = this.planets.get("earth");
+    if (!earth || earth.destroyed) {
+      this.acts.resultHint = "지구가 있어야 식을 볼 수 있습니다.";
+      return;
+    }
+    const target = kind === "solar" ? 0 : Math.PI;
+    const delta = Math.atan2(Math.sin(target - this.moonAngle), Math.cos(target - this.moonAngle));
+    this.eclipse = {
+      kind,
+      t: 0,
+      move: 1.45,
+      hold: 2.5,
+      from: this.moonAngle,
+      to: this.moonAngle + delta,
+    };
+    this.moonLocked = true;
+    this.caption =
+      kind === "solar"
+        ? "개기일식 · 달이 태양을 가려 지구에 그림자가 집니다"
+        : "개기월식 · 지구 그림자가 달을 붉게 덮습니다";
+    this.playHint = this.caption;
+  }
+
+  restoreOne(): void {
+    if (this.blocked()) return;
+    const id = [...this.acts.deathOrder].reverse().find((key) => this.planets.get(key)?.destroyed);
+    if (id) {
+      const act = this.planets.get(id)?.death ?? "laser";
+      this.acts.playReverse(id, act, true);
+      return;
+    }
+    const top = this.history.peek();
+    if (top?.kind === "impact") {
+      this.undo();
+      return;
+    }
+    this.acts.resultHint = "복원할 행성이 없습니다.";
+  }
+
+  undo(): void {
+    if (this.blocked()) return;
+    const action = this.history.pop();
+    if (!action) {
+      this.acts.resultHint = "되돌릴 행동이 없습니다.";
+      return;
+    }
+    if (action.kind === "impact") this.acts.playImpactReverse(action);
+    else if (action.kind === "destroy") this.acts.playReverse(action.planetId, action.act, false);
+    else if (action.kind === "restore") this.acts.playForward(action.planetId, action.act, false);
+    else this.undoReset(action);
+  }
+
+  resetAll(): void {
+    if (this.blocked()) return;
+    const destroyedIds = this.acts.deathOrder.filter((id) => this.planets.get(id)?.destroyed);
+    const bodies = [...this.planets.values()].map((planet) => this.snapshot(planet));
+    const priorDays = this.simDays;
+    this.history.push({
+      kind: "reset",
+      destroyedIds: [...destroyedIds],
+      simDays: priorDays,
+      bodies,
+    });
+    for (const id of [...destroyedIds].reverse()) {
+      const act = this.planets.get(id)?.death ?? "laser";
+      this.acts.playReverse(id, act, false, 0.85);
+    }
+    let tracks: { id: string; fromE: number; fromM: number }[] | null = null;
+    let fromDays = priorDays;
+    this.acts.playRewind(
+      1.2,
+      (u) => {
+        if (!tracks) {
+          fromDays = this.simDays;
+          tracks = [...this.planets.values()].map((planet) => ({
+            id: planet.id,
+            fromE: planet.eOffset,
+            fromM: planet.mOffset,
+          }));
+        }
+        this.simDays = fromDays * (1 - u);
+        for (const track of tracks) {
+          const planet = this.planets.get(track.id);
+          if (!planet) continue;
+          planet.eOffset = track.fromE * (1 - u);
+          planet.mOffset = track.fromM * (1 - u);
+          for (const scar of planet.scars) scar.scale.setScalar(Math.max(0.001, 1 - u));
+        }
+      },
+      () => {
+        for (const planet of this.planets.values()) {
+          planet.eOffset = 0;
+          planet.mOffset = 0;
+          this.clearScars(planet);
+        }
+        this.simDays = 0;
+        this.moonLocked = false;
+        this.moonAngle = 1.15;
+        this.eclipse = null;
+        this.caption = "";
+        this.clearDebris();
+        this.selectedIds.clear();
+        this.acts.resultHint = "파괴를 역순으로 되돌리고 궤도를 되감았습니다.";
+        this.updateSelectionVisuals();
+      },
+    );
+  }
+
+  private undoReset(action: Extract<SimAction, { kind: "reset" }>): void {
+    const fromDays = this.simDays;
+    const tracks = action.bodies.map((snap) => {
+      const planet = this.planets.get(snap.id);
+      return {
+        id: snap.id,
+        fromE: planet?.eOffset ?? 0,
+        toE: snap.eOffset,
+        fromM: planet?.mOffset ?? 0,
+        toM: snap.mOffset,
+      };
+    });
+    this.acts.playRewind(
+      1.15,
+      (u) => {
+        this.simDays = fromDays + (action.simDays - fromDays) * u;
+        for (const track of tracks) {
+          const planet = this.planets.get(track.id);
+          if (!planet) continue;
+          planet.eOffset = track.fromE + (track.toE - track.fromE) * u;
+          planet.mOffset = track.fromM + (track.toM - track.fromM) * u;
+        }
+      },
+      () => {
+        this.simDays = action.simDays;
+        for (const snap of action.bodies) this.applySnapshot(snap);
+        this.syncAll();
+      },
+    );
+    for (const id of action.destroyedIds) {
+      const snap = action.bodies.find((body) => body.id === id);
+      const act: DeathAct = snap?.death ?? "laser";
+      this.acts.playForward(id, act, false, 0.85);
+    }
+  }
+
+  private blocked(): boolean {
+    if (this.acts.busy || this.eclipse) {
+      this.playHint = "재생이 끝난 뒤 다시 누르세요.";
+      return true;
+    }
+    this.playHint = "";
+    return false;
+  }
+
+  private hideBody(id: string): void {
+    const planet = this.planets.get(id);
+    if (!planet) return;
     planet.mesh.visible = false;
     planet.light.intensity = 0;
     (planet.orbitLine.material as LineBasicMaterial).opacity = 0.12;
     planet.label.style.opacity = "0";
-    this.selectedIds.delete(planetId);
-    if (recordHistory) {
-      this.history.push({ kind: "destroy", planetId });
-      sfx.playDestroy();
-    }
-    this.updateSelectionVisuals();
+    this.selectedIds.delete(id);
   }
 
-  restorePlanet(planetId: string, recordHistory = true): void {
-    const planet = this.planets.get(planetId);
-    if (!planet || !planet.destroyed) return;
-    planet.destroyed = false;
+  private showBody(id: string): void {
+    const planet = this.planets.get(id);
+    if (!planet) return;
     planet.mesh.visible = true;
     (planet.orbitLine.material as LineBasicMaterial).opacity = 0.95;
-    if (recordHistory) this.history.push({ kind: "restore", planetId });
-    this.updateSelectionVisuals();
-  }
-
-  destroySelected(): void {
-    for (const id of [...this.selectedIds]) this.destroyPlanet(id);
-  }
-
-  restoreOne(): void {
-    const destroyed = PLANETS.map((p) => p.id).filter((id) => this.planets.get(id)?.destroyed);
-    if (destroyed.length === 0) return;
-    this.restorePlanet(destroyed[destroyed.length - 1]);
-  }
-
-  undo(): void {
-    const action = this.history.pop();
-    if (!action) return;
-    if (action.kind === "destroy") this.restorePlanet(action.planetId, false);
-    else if (action.kind === "restore") this.destroyPlanet(action.planetId, false);
-    else if (action.kind === "impact") {
-      const planet = this.planets.get(action.planetId);
-      if (!planet) return;
-      planet.eOffset = action.eOffset;
-      planet.mOffset = action.mOffset;
-      if (action.scarIndex >= 0) this.removeScar(planet, action.scarIndex);
-    } else if (action.kind === "reset") {
-      this.simDays = action.simDays;
-      for (const snap of action.bodies) this.applySnapshot(snap);
-      for (const id of this.planets.keys()) {
-        const destroyed = action.destroyedIds.includes(id);
-        const planet = this.planets.get(id);
-        if (!planet) continue;
-        if (destroyed) this.destroyPlanet(id, false);
-        else this.restorePlanet(id, false);
-      }
-      this.syncAll();
-    }
-  }
-
-  resetAll(recordHistory = true): void {
-    const destroyedIds = [...this.planets.entries()]
-      .filter(([, planet]) => planet.destroyed)
-      .map(([id]) => id);
-    const bodies = [...this.planets.values()].map((planet) => this.snapshot(planet));
-    const priorDays = this.simDays;
-    for (const id of this.planets.keys()) this.restorePlanet(id, false);
-    this.selectedIds.clear();
-    this.simDays = 0;
-    if (this.meteor) {
-      this.scene.remove(this.meteor.mesh);
-      this.meteor = null;
-    }
-    for (const burst of this.debris) {
-      this.scene.remove(burst.points);
-      burst.points.geometry.dispose();
-      (burst.points.material as PointsMaterial).dispose();
-    }
-    this.debris.length = 0;
-    for (const planet of this.planets.values()) {
-      planet.epoch = Math.random() * Math.PI * 2;
-      planet.eOffset = 0;
-      planet.mOffset = 0;
-      planet.spin = 0;
-      this.clearScars(planet);
-    }
-    this.syncAll();
-    if (recordHistory) {
-      this.history.push({ kind: "reset", destroyedIds, simDays: priorDays, bodies });
-    }
-    this.updateSelectionVisuals();
-  }
-
-  impactSelected(fast = false): void {
-    const ids = [...this.selectedIds].filter((id) => {
-      const planet = this.planets.get(id);
-      return planet && !planet.destroyed;
-    });
-    const target = ids[0];
-    if (!target || this.meteor) return;
-    sfx.prime();
-    this.launchMeteor(target, fast);
-  }
-
-  private launchMeteor(planetId: string, fast: boolean): void {
-    const planet = this.planets.get(planetId);
-    if (!planet || planet.destroyed) return;
-    writePlanetAu(
-      planet.def,
-      planet.epoch +
-        ((2 * Math.PI) / planet.def.orbitalPeriodDays) * this.simDays +
-        planet.mOffset,
-      planet.eOffset,
-      this.auScratch,
-    );
-    const pos = this.auScratch.clone().addScaledVector(APPROACH, 0.12);
-    const vel = APPROACH.clone().multiplyScalar(fast ? -0.045 : -0.011);
-    const mesh = createMeteorMesh();
-    this.scene.add(mesh);
-    this.meteor = { pos, vel, mesh, fast, planetId };
-  }
-
-  private onMeteorHit(flight: MeteorFlight): void {
-    const planet = this.planets.get(flight.planetId);
-    this.scene.remove(flight.mesh);
-    this.meteor = null;
-    if (!planet || planet.destroyed) return;
-    sfx.playImpact();
-    const hit = planet.mesh.getWorldPosition(new Vector3());
-    this.particles.spawnExplosion(hit, flight.fast ? 0xf97316 : planet.def.color, flight.fast ? 80 : 36);
-    if (flight.fast) {
-      this.spawnDebris(planet, hit);
-      return;
-    }
-    const beforeE = planet.eOffset;
-    const beforeM = planet.mOffset;
-    planet.eOffset += 0.012;
-    planet.mOffset += 0.08;
-    const scarIndex = this.addScar(planet);
-    this.history.push({
-      kind: "impact",
-      planetId: planet.def.id,
-      eOffset: beforeE,
-      mOffset: beforeM,
-      scarIndex,
-    });
-  }
-
-  private addScar(planet: PlanetRuntime): number {
-    const scar = new Mesh(
-      new SphereGeometry(planet.radius * 0.07, 10, 8),
-      new MeshStandardMaterial({ color: 0x1a100c, roughness: 1, metalness: 0 }),
-    );
-    const point = planet.mesh.position.clone().addScaledVector(APPROACH, planet.radius);
-    planet.mesh.worldToLocal(point);
-    if (point.lengthSq() > 1e-8) point.normalize().multiplyScalar(planet.radius * 0.96);
-    scar.position.copy(point);
-    scar.layers.mask = planet.mesh.layers.mask;
-    planet.mesh.add(scar);
-    planet.scars.push(scar);
-    return planet.scars.length - 1;
   }
 
   private removeScar(planet: PlanetRuntime, index: number): void {
@@ -444,19 +521,21 @@ export class SolarSystem {
     while (planet.scars.length > 0) this.removeScar(planet, planet.scars.length - 1);
   }
 
-  private spawnDebris(planet: PlanetRuntime, origin: Vector3): void {
+  private spawnDebris(planet: PlanetRuntime, origin: Vector3, home: boolean): void {
     const count = 16;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const dir = new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
       const speed = 3.5 + Math.random() * 6;
-      positions[i * 3] = origin.x;
-      positions[i * 3 + 1] = origin.y;
-      positions[i * 3 + 2] = origin.z;
-      velocities[i * 3] = dir.x * speed + APPROACH.x * -2;
-      velocities[i * 3 + 1] = dir.y * speed + APPROACH.y * -2;
-      velocities[i * 3 + 2] = dir.z * speed + APPROACH.z * -2;
+      const radius = home ? 2.4 + Math.random() * 2.2 : 0;
+      positions[i * 3] = origin.x + dir.x * radius;
+      positions[i * 3 + 1] = origin.y + dir.y * radius;
+      positions[i * 3 + 2] = origin.z + dir.z * radius;
+      const sign = home ? -1 : 1;
+      velocities[i * 3] = dir.x * speed * sign + APPROACH.x * -2;
+      velocities[i * 3 + 1] = dir.y * speed * sign + APPROACH.y * -2;
+      velocities[i * 3 + 2] = dir.z * speed * sign + APPROACH.z * -2;
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(positions, 3));
@@ -470,15 +549,47 @@ export class SolarSystem {
       }),
     );
     this.scene.add(points);
-    this.debris.push({ positions, velocities, points, life: 0, planetId: planet.def.id });
+    this.debris.push({
+      positions,
+      velocities,
+      points,
+      life: 0,
+      fade: home ? 1.3 : 1.5,
+      planetId: planet.id,
+    });
+  }
+
+  private recallDebris(id: string): void {
+    const planet = this.planets.get(id);
+    if (!planet) return;
+    const live = this.debris.filter((burst) => burst.planetId === id);
+    if (live.length === 0) {
+      this.spawnDebris(planet, planet.mesh.position.clone(), true);
+      return;
+    }
+    for (const burst of live) {
+      burst.life = 0;
+      burst.fade = 1.3;
+      for (let p = 0; p < burst.velocities.length; p++) burst.velocities[p] *= -1;
+    }
+  }
+
+  private clearDebris(): void {
+    for (const burst of this.debris) {
+      this.scene.remove(burst.points);
+      burst.points.geometry.dispose();
+      (burst.points.material as PointsMaterial).dispose();
+    }
+    this.debris.length = 0;
   }
 
   private snapshot(planet: PlanetRuntime): BodySnapshot {
     return {
-      id: planet.def.id,
+      id: planet.id,
       epoch: planet.epoch,
       eOffset: planet.eOffset,
       mOffset: planet.mOffset,
+      death: planet.death,
       scars: planet.scars.map((scar) => ({
         x: scar.position.x,
         y: scar.position.y,
@@ -552,96 +663,112 @@ export class SolarSystem {
       const planet = this.planets.get(key);
       return planet && !planet.destroyed;
     });
-    const show = this.mode === "impact" && !this.meteor && id !== undefined;
-    this.previewHit.visible = show;
-    this.previewLine.visible = show;
-    if (!show || !id) return;
-    const planet = this.planets.get(id);
-    if (!planet) return;
-    const center = planet.mesh.position;
-    const reach = planet.radius * planet.mesh.scale.x;
-    const hit = center.clone().addScaledVector(APPROACH, -reach);
-    const start = center.clone().addScaledVector(APPROACH, 14 + reach);
-    this.previewHit.position.copy(hit);
+    const planet = id ? this.planets.get(id) : undefined;
+    const idle = !this.acts.busy && !this.eclipse && planet !== undefined;
+    const meteor = idle && this.mode === "meteor";
+    const hole = idle && this.mode === "blackhole";
+    const laser = idle && this.mode === "laser";
+    this.previewHit.visible = meteor || hole;
+    this.previewLine.visible = meteor || laser;
+    if (!idle || !planet) return;
+    const center = planet.mesh.position.clone().sub(planet.pull);
+    const reach = planet.radius * Math.max(planet.layoutScale, 0.35);
+    const hitMat = this.previewHit.material;
+    if (!(hitMat instanceof MeshBasicMaterial)) return;
     const attr = this.previewLine.geometry.getAttribute("position") as BufferAttribute;
+    if (hole) {
+      const side = new Vector3().crossVectors(center.clone().normalize(), new Vector3(0, 1, 0));
+      if (side.lengthSq() < 1e-6) side.set(1, 0, 0);
+      side.normalize();
+      this.previewHit.position.copy(center).addScaledVector(side, 7);
+      this.previewHit.scale.setScalar(6);
+      hitMat.color.setHex(0x000000);
+      return;
+    }
+    const hit = center.clone().addScaledVector(APPROACH, reach);
+    const start = laser
+      ? center.clone().set(center.x, center.y + 16 + reach, center.z)
+      : center.clone().addScaledVector(APPROACH, 18 + reach);
+    this.previewHit.position.copy(hit);
+    this.previewHit.scale.setScalar(meteor ? 3.2 : 1);
+    hitMat.color.setHex(laser ? 0xe0f2fe : 0xfff3c4);
     attr.setXYZ(0, start.x, start.y, start.z);
     attr.setXYZ(1, hit.x, hit.y, hit.z);
     attr.needsUpdate = true;
     this.previewLine.geometry.computeBoundingSphere();
+    const lineMat = this.previewLine.material;
+    if (lineMat instanceof LineBasicMaterial) lineMat.color.setHex(laser ? 0xbae6fd : 0xfde68a);
   }
 
-  private stepMeteor(dayStep: number): void {
-    const flight = this.meteor;
-    if (!flight || dayStep <= 0) return;
-    const planet = this.planets.get(flight.planetId);
-    if (!planet || planet.destroyed) {
-      this.scene.remove(flight.mesh);
-      this.meteor = null;
+  private stepMoon(dt: number): void {
+    const eclipse = this.eclipse;
+    if (eclipse) {
+      eclipse.t += dt;
+      const u = Math.min(1, eclipse.t / eclipse.move);
+      const eased = u * u * (3 - 2 * u);
+      this.moonAngle = eclipse.from + (eclipse.to - eclipse.from) * eased;
+      if (eclipse.t >= eclipse.move + eclipse.hold) {
+        this.moonAngle = eclipse.to;
+        const kind = eclipse.kind;
+        this.eclipse = null;
+        this.caption = "";
+        this.playHint =
+          kind === "solar"
+            ? "달이 해와 지구 사이에 머뭅니다."
+            : "달이 지구 그림자에 머뭅니다.";
+      }
+    } else if (!this.moonLocked) {
+      this.moonAngle += dt * 0.22;
+    }
+
+    const earth = this.planets.get("earth");
+    if (!earth || earth.destroyed) {
+      this.moonMesh.visible = false;
+      this.umbra.visible = false;
+      this.lunarShadow.visible = false;
+      this.solarCover = 0;
+      this.lunarCover = 0;
       return;
     }
-    const limit = Math.max(bodyRadiusAu(planet.def.radiusKm) * 40, 2.5e-4);
-    const soi = sphereOfInfluence(planet.def);
-    let left = dayStep;
-    let guard = 0;
-    while (left > 1e-8 && guard < 400) {
-      const dist = flight.pos.distanceTo(planet.au);
-      const step = Math.min(left, dist > soi ? 0.04 : 0.004);
-      this.prevAu.copy(flight.pos);
-      this.integrateMeteor(flight, planet, step, dist < soi);
-      if (this.segmentHits(this.prevAu, flight.pos, planet.au, limit)) {
-        this.onMeteorHit(flight);
-        return;
-      }
-      left -= step;
-      guard += 1;
-    }
-    const au = flight.pos.length();
-    flight.mesh.position.copy(flight.pos);
-    if (au > 1e-8) {
-      flight.mesh.position.multiplyScalar(orbitRadiusSceneUnits(au) / au);
-    }
-  }
+    this.moonMesh.visible = true;
+    const center = earth.mesh.position;
+    const radial = center.clone();
+    if (radial.lengthSq() < 1e-8) radial.set(1, 0, 0);
+    else radial.normalize();
+    this.moonSide.crossVectors(radial, new Vector3(0, 1, 0));
+    if (this.moonSide.lengthSq() < 1e-8) this.moonSide.crossVectors(radial, new Vector3(1, 0, 0));
+    this.moonSide.normalize();
+    const dist = Math.max(2.8, earth.radius * earth.layoutScale * 3.4);
+    this.moonMesh.position
+      .copy(center)
+      .addScaledVector(radial, -Math.cos(this.moonAngle) * dist)
+      .addScaledVector(this.moonSide, Math.sin(this.moonAngle) * dist);
+    this.moonMesh.scale.setScalar(Math.max(0.72, earth.layoutScale * 0.42));
+    this.moonLight.position.set(0, 0, 0);
+    this.moonLight.target.position.copy(this.moonMesh.position);
 
-  private integrateMeteor(
-    flight: MeteorFlight,
-    planet: PlanetRuntime,
-    step: number,
-    inInfluence: boolean,
-  ): void {
-    const acc = this.gravityAt(flight.pos, inInfluence ? planet : null);
-    flight.vel.addScaledVector(acc, step);
-    flight.pos.addScaledVector(flight.vel, step);
-  }
+    const solarGap = Math.atan2(Math.sin(this.moonAngle), Math.cos(this.moonAngle));
+    const lunarGap = Math.atan2(Math.sin(this.moonAngle - Math.PI), Math.cos(this.moonAngle - Math.PI));
+    this.solarCover = Math.exp(-(solarGap * solarGap) / 0.04);
+    this.lunarCover = Math.exp(-(lunarGap * lunarGap) / 0.04);
 
-  private gravityAt(pos: Vector3, planet: PlanetRuntime | null): Vector3 {
-    const r2 = Math.max(pos.lengthSq(), 1e-6);
-    const acc = pos.clone().multiplyScalar(-MU_SUN / (r2 * Math.sqrt(r2)));
-    if (!planet) return acc;
-    const dx = pos.x - planet.au.x;
-    const dy = pos.y - planet.au.y;
-    const dz = pos.z - planet.au.z;
-    const d2 = Math.max(dx * dx + dy * dy + dz * dz, 1e-12);
-    const inv = -MU_SUN * planet.def.massSun / (d2 * Math.sqrt(d2));
-    acc.x += dx * inv;
-    acc.y += dy * inv;
-    acc.z += dz * inv;
-    return acc;
-  }
+    const reach = earth.radius * earth.layoutScale;
+    this.umbra.position.copy(center).addScaledVector(radial, -reach * 0.9);
+    this.umbra.lookAt(0, 0, 0);
+    this.umbra.scale.set(reach * 0.78, reach * 0.78, reach * 0.22);
+    const umbraMat = this.umbra.material;
+    if (umbraMat instanceof MeshBasicMaterial) umbraMat.opacity = 0.82 * this.solarCover;
+    this.umbra.visible = this.solarCover > 0.08;
 
-  private segmentHits(a: Vector3, b: Vector3, center: Vector3, limit: number): boolean {
-    const abx = b.x - a.x;
-    const aby = b.y - a.y;
-    const abz = b.z - a.z;
-    const ab2 = abx * abx + aby * aby + abz * abz;
-    const acx = center.x - a.x;
-    const acy = center.y - a.y;
-    const acz = center.z - a.z;
-    let t = ab2 < 1e-18 ? 0 : (acx * abx + acy * aby + acz * abz) / ab2;
-    t = Math.min(1, Math.max(0, t));
-    const dx = a.x + abx * t - center.x;
-    const dy = a.y + aby * t - center.y;
-    const dz = a.z + abz * t - center.z;
-    return dx * dx + dy * dy + dz * dz <= limit * limit;
+    this.lunarShadow.position.copy(this.moonMesh.position);
+    this.lunarShadow.scale.setScalar(this.moonMesh.scale.x * 1.45);
+    const lunarMat = this.lunarShadow.material;
+    if (lunarMat instanceof MeshBasicMaterial) lunarMat.opacity = 0.62 * this.lunarCover;
+    this.lunarShadow.visible = this.lunarCover > 0.08;
+    this.moonMat.color.setHex(this.lunarCover > 0.35 ? 0x9f1239 : 0xd6d3d1);
+    this.moonMat.emissive.setHex(this.lunarCover > 0.2 ? 0x7f1d1d : 0x000000);
+    this.moonMat.emissiveIntensity = this.lunarCover * 0.85;
+    this.moonLight.intensity = 2.2 * (1 - 0.94 * this.lunarCover);
   }
 
   private stepDebris(dt: number): void {
@@ -669,9 +796,9 @@ export class SolarSystem {
       }
       attr.needsUpdate = true;
       const mat = burst.points.material as PointsMaterial;
-      mat.opacity = Math.max(0, 1 - burst.life / 1.5);
+      mat.opacity = Math.max(0, 1 - burst.life / burst.fade);
       mat.transparent = true;
-      if (burst.life >= 1.5) {
+      if (burst.life >= burst.fade) {
         this.scene.remove(burst.points);
         burst.points.geometry.dispose();
         mat.dispose();
@@ -681,23 +808,25 @@ export class SolarSystem {
   }
 
   update(dt: number): void {
-    const capped = this.meteor !== null || this.debris.length > 0;
-    const target = this.paused ? 0 : Math.min(this.timeScale, capped ? 4 : 100);
+    const playing = this.acts.busy || this.debris.length > 0 || this.eclipse !== null;
+    const target = this.paused ? 0 : Math.min(this.timeScale, playing ? 4 : 100);
     const follow = 1 - Math.exp(-Math.max(dt, 0) / 0.35);
     this.appliedScale += (target - this.appliedScale) * Math.min(1, follow);
-    const dayStep = dt * this.appliedScale * 8;
+    const dayStep = this.paused || this.acts.rewinding ? 0 : dt * this.appliedScale * 8;
     this.simDays += dayStep;
 
     for (const planet of this.planets.values()) {
+      planet.pull.set(0, 0, 0);
       planet.spin += planet.def.spinRadPerDay * dayStep;
       planet.mesh.rotation.y = planet.spin;
       if (planet.clouds) planet.clouds.rotation.y = planet.spin * 0.2;
       this.syncPlanet(planet);
     }
+    this.stepMoon(dt);
     this.applyEclipse();
-    this.stepMeteor(dayStep);
     this.stepDebris(dt);
     this.particles.update(dt);
+    this.acts.step(dt);
     this.updatePreview();
   }
 
@@ -713,7 +842,9 @@ export class SolarSystem {
         continue;
       }
       const eclipsed = isEclipsed(planet.au, occulters.filter((item) => item.pos !== planet.au));
-      planet.light.intensity = 3.4 * earthExposure(planet.auDistance) * (eclipsed ? 0.08 : 1);
+      let intensity = 3.4 * earthExposure(planet.auDistance) * (eclipsed ? 0.08 : 1);
+      if (planet.id === "earth") intensity *= 1 - 0.93 * this.solarCover;
+      planet.light.intensity = intensity;
     }
   }
 
@@ -736,15 +867,18 @@ export class SolarSystem {
 
     const vFov = (camera.fov * Math.PI) / 180;
     for (const [id, planet] of this.planets) {
-      if (planet.destroyed) {
-        planet.label.style.opacity = "0";
-        continue;
-      }
       const dist = Math.max(camera.position.distanceTo(planet.mesh.position), 0.5);
       const worldPerPx = (2 * Math.tan(vFov / 2) * dist) / Math.max(height, 1);
       const minDiameter = 3.2 * worldPerPx;
       const scale = Math.max(1, minDiameter / (planet.radius * 2));
-      planet.mesh.scale.setScalar(scale);
+      planet.layoutScale = scale;
+      planet.mesh.scale.setScalar(scale * planet.visualScale);
+      const animating = this.acts.isAnimating(id);
+      if (planet.destroyed && !animating) {
+        planet.mesh.visible = false;
+        planet.label.style.opacity = "0";
+        continue;
+      }
       const angular = (planet.radius * scale) / dist;
       if (planet.atmoFade) {
         planet.atmoFade.value = angular < 0.008 ? 0 : angular < 0.03 ? (angular - 0.008) / 0.022 : 1;
@@ -767,13 +901,36 @@ export class SolarSystem {
         selected,
       );
     }
+
+    if (!this.moonMesh.visible) this.moonLabel.style.opacity = "0";
+    else {
+      const moonNdc = this.moonMesh.getWorldPosition(this.ndc);
+      moonNdc.project(camera);
+      const moonOpacity = moonNdc.z > 1 ? 0 : this.lunarCover > 0.35 || this.solarCover > 0.35 ? 1 : 0.85;
+      this.labels.place(
+        this.moonLabel,
+        (moonNdc.x * 0.5 + 0.5) * width,
+        (-moonNdc.y * 0.5 + 0.5) * height,
+        moonOpacity,
+        false,
+      );
+    }
   }
 
   getHudText(): string {
     const destroyedCount = [...this.planets.values()].filter((p) => p.destroyed).length;
     const sel = this.selectedIds.size > 0 ? [...this.selectedIds].join(", ") : "없음";
     const scale = this.paused ? "일시정지" : `${this.appliedScale.toFixed(2)}×`;
+    const tool =
+      this.mode === "meteor"
+        ? "운석"
+        : this.mode === "blackhole"
+          ? "블랙홀"
+          : this.mode === "laser"
+            ? "광선"
+            : "선택";
     return [
+      `도구: ${tool}`,
       `시뮬레이션 일수: ${this.simDays.toFixed(0)}`,
       `선택: ${sel}`,
       `파괴됨: ${destroyedCount}/${PLANETS.length}`,
