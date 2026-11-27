@@ -43,5 +43,6 @@ Orbital radii use `8 + log10(AU + 0.05) × 28` scene units. Planet sizes use a l
 
 - Select / multi-select (Shift+click)
 - Destroy, meteor impact, restore one, reset all, undo
+- Procedural Web Audio cues for select, meteor impact, and destroy (no audio files)
 - Time scale 0.25×–100× and pause
 - Orbit / pan / zoom camera; double-click a planet in the list to focus

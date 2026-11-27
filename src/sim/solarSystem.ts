@@ -16,6 +16,7 @@ import {
   orbitRadiusSceneUnits,
   sunRadiusSceneUnits,
 } from "../data/planets";
+import { sfx } from "../audio/sfx";
 import { ParticleSystem, MeteorState, createMeteorMesh } from "../effects/particles";
 import { HistoryStack } from "./history";
 
@@ -144,6 +145,7 @@ export class SolarSystem {
       this.selectedIds.delete(planetId);
     } else {
       this.selectedIds.add(planetId);
+      sfx.playSelect();
     }
     this.updateSelectionVisuals();
   }
@@ -156,6 +158,7 @@ export class SolarSystem {
   selectOnly(planetId: string): void {
     this.selectedIds.clear();
     this.selectedIds.add(planetId);
+    sfx.playSelect();
     this.updateSelectionVisuals();
   }
 
@@ -196,6 +199,7 @@ export class SolarSystem {
     this.selectedIds.delete(planetId);
     if (recordHistory) {
       this.history.push({ kind: "destroy", planetId });
+      sfx.playDestroy();
     }
     this.updateSelectionVisuals();
   }
@@ -280,6 +284,7 @@ export class SolarSystem {
   }
 
   launchMeteorAt(targetId: string): void {
+    sfx.prime();
     const planet = this.planets.get(targetId);
     if (!planet || planet.destroyed || this.meteor?.active) return;
 
@@ -299,6 +304,7 @@ export class SolarSystem {
       active: true,
       planetId: targetId,
       onHit: () => {
+        sfx.playImpact();
         this.destroyPlanet(targetId);
       },
     };
