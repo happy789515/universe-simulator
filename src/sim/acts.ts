@@ -321,8 +321,6 @@ export class ActPlayer<T extends ActBody> {
       this.finish("빠른 충돌: 파편이 흩어집니다.");
       return;
     }
-    planet.eOffset = clip.eBefore + 0.012;
-    planet.mOffset = clip.mBefore + 0.08;
     const scarIndex = this.addScar(planet);
     this.history.push({
       kind: "impact",

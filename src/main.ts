@@ -131,6 +131,7 @@ async function boot(): Promise<void> {
       sim.mode = mode;
       sim.playHint = "";
       sim.acts.clearResult();
+      sim.armMeteorPreview();
     },
     onUseTool: (planetId, fast) => sim.useTool(planetId, fast),
     onEclipse: (kind: EclipseKind) => sim.playEclipse(kind),

@@ -112,6 +112,7 @@ export class SolarSystem {
   private eclipse: EclipsePlay | null = null;
   private solarCover = 0;
   private lunarCover = 0;
+  private meteorAim = true;
   private readonly moonMesh: Mesh;
   private readonly moonMat: MeshStandardMaterial;
   private readonly moonLight: DirectionalLight;
@@ -319,6 +320,10 @@ export class SolarSystem {
     }
   }
 
+  armMeteorPreview(): void {
+    this.meteorAim = true;
+  }
+
   hintText(): string {
     return this.playHint || this.acts.statusHint || this.acts.resultHint;
   }
@@ -332,6 +337,7 @@ export class SolarSystem {
     }
     this.selectOnly(planetId);
     if (this.mode === "select") return;
+    if (this.mode === "meteor") this.meteorAim = false;
     sfx.prime();
     this.acts.launch(this.mode, planetId, fast);
   }
@@ -496,7 +502,7 @@ export class SolarSystem {
     if (!planet) return;
     planet.mesh.visible = false;
     planet.light.intensity = 0;
-    (planet.orbitLine.material as LineBasicMaterial).opacity = 0.12;
+    planet.orbitLine.visible = false;
     planet.label.style.opacity = "0";
     this.selectedIds.delete(id);
   }
@@ -505,6 +511,7 @@ export class SolarSystem {
     const planet = this.planets.get(id);
     if (!planet) return;
     planet.mesh.visible = true;
+    planet.orbitLine.visible = true;
     (planet.orbitLine.material as LineBasicMaterial).opacity = 0.95;
   }
 
@@ -665,7 +672,7 @@ export class SolarSystem {
     });
     const planet = id ? this.planets.get(id) : undefined;
     const idle = !this.acts.busy && !this.eclipse && planet !== undefined;
-    const meteor = idle && this.mode === "meteor";
+    const meteor = idle && this.mode === "meteor" && this.meteorAim;
     const hole = idle && this.mode === "blackhole";
     const laser = idle && this.mode === "laser";
     this.previewHit.visible = meteor || hole;
