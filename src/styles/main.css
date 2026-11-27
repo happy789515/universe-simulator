@@ -218,3 +218,27 @@ input[type="range"] {
   z-index: 10;
   max-width: min(420px, calc(100vw - 300px));
 }
+
+.label-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  overflow: hidden;
+}
+
+.body-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #e8eef7;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: pre;
+  text-shadow: 0 1px 2px #000;
+}
+
+.body-label.is-selected {
+  color: #fff;
+  font-weight: 650;
+}

@@ -7,7 +7,7 @@ import {
   PointsMaterial,
   Scene,
   Vector3,
-} from "three";
+} from "three/webgpu";
 
 interface ParticleBurst {
   points: Points;

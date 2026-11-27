@@ -1,7 +1,33 @@
+export interface ScarPoint {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface BodySnapshot {
+  id: string;
+  epoch: number;
+  eOffset: number;
+  mOffset: number;
+  scars: ScarPoint[];
+}
+
 export type SimAction =
   | { kind: "destroy"; planetId: string }
   | { kind: "restore"; planetId: string }
-  | { kind: "reset"; destroyedIds: string[]; simDays: number };
+  | {
+      kind: "impact";
+      planetId: string;
+      eOffset: number;
+      mOffset: number;
+      scarIndex: number;
+    }
+  | {
+      kind: "reset";
+      destroyedIds: string[];
+      simDays: number;
+      bodies: BodySnapshot[];
+    };
 
 export class HistoryStack {
   private readonly stack: SimAction[] = [];

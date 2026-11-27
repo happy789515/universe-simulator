@@ -37,7 +37,7 @@ npx wrangler pages deploy dist --project-name universe-simulator
 
 ## Scale conventions
 
-Orbital radii use `8 + log10(AU + 0.05) × 28` scene units. Planet sizes use a logarithmic compression of Earth-radius ratios so the gas giants remain visible without overlapping the Sun. Orbital motion uses mean angular speed from sidereal periods (Kepler-like, circular approximation).
+Orbital radii use `20 + log10(AU + 0.05) × 28` scene units (same log slope as before, shifted so Mercury stays outside the Sun). Planet sizes use a logarithmic compression of Earth-radius ratios. Planet positions are Keplerian in true AU (eccentricity and inclination included) and then log-mapped for display. Only meteors and impact debris are integrated. Lighting is exposed for Earth, with a terminator, eclipses, and a Saturn ring shadow. The renderer is Three.js `WebGPURenderer`, falling back to its WebGL2 backend when WebGPU is unavailable.
 
 ## Tools
 
