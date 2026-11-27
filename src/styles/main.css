@@ -97,6 +97,11 @@ button.tool-btn.active {
   background: rgba(14, 116, 144, 0.35);
 }
 
+#camera-row .tool-btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .planet-list {
   list-style: none;
   max-height: 12rem;

@@ -1,5 +1,12 @@
+import { CameraMode } from "../camera/cameraRig";
 import { SolarSystem, ToolMode } from "../sim/solarSystem";
 import { PlanetInfoPanel } from "./planetInfoPanel";
+
+const CAMERA_HINTS: Record<CameraMode, string> = {
+  orbit: "드래그 회전 · 우클릭 이동 · 휠 줌. 더블클릭은 포커스.",
+  follow: "선택된 행성(없으면 포커스)을 따라갑니다. 휠로 거리.",
+  free: "WASD 이동 · 드래그 시점 · E/Space 상승 · Q/Ctrl 하강 · Shift 가속. 키 1/2/3.",
+};
 
 export interface ToolPaletteHandlers {
   onModeChange: (mode: ToolMode) => void;
@@ -12,6 +19,8 @@ export interface ToolPaletteHandlers {
   onSelectPlanet: (planetId: string) => void;
   onTimeScale: (value: number) => void;
   onPauseToggle: (paused: boolean) => void;
+  onCameraMode: (mode: CameraMode) => void;
+  getCameraMode: () => CameraMode;
   getState: () => SolarSystem;
 }
 
@@ -19,6 +28,8 @@ export class ToolPalette {
   private readonly root: HTMLElement;
   private readonly handlers: ToolPaletteHandlers;
   private modeButtons: Partial<Record<ToolMode, HTMLButtonElement>> = {};
+  private cameraButtons: Partial<Record<CameraMode, HTMLButtonElement>> = {};
+  private camHint!: HTMLParagraphElement;
   private planetList!: HTMLUListElement;
   private undoBtn!: HTMLButtonElement;
   private timeLabel!: HTMLSpanElement;
@@ -41,6 +52,14 @@ export class ToolPalette {
     for (const mode of ["select", "destroy", "impact"] as ToolMode[]) {
       this.modeButtons[mode]?.classList.toggle("active", sim.mode === mode);
     }
+
+    const cameraMode = this.handlers.getCameraMode();
+    for (const mode of ["orbit", "follow", "free"] as CameraMode[]) {
+      const btn = this.cameraButtons[mode];
+      btn?.classList.toggle("active", cameraMode === mode);
+      btn?.setAttribute("aria-pressed", String(cameraMode === mode));
+    }
+    this.camHint.textContent = CAMERA_HINTS[cameraMode];
 
     this.timeLabel.textContent = sim.paused
       ? "일시정지"
@@ -89,6 +108,11 @@ export class ToolPalette {
         <div class="btn-row" id="mode-row"></div>
       </section>
       <section class="tool-group">
+        <h3>카메라</h3>
+        <div class="btn-row" id="camera-row"></div>
+        <p class="scale-note" id="cam-hint"></p>
+      </section>
+      <section class="tool-group">
         <h3>행동</h3>
         <div class="btn-row">
           <button type="button" class="tool-btn" data-action="destroy">행성 파괴</button>
@@ -107,7 +131,7 @@ export class ToolPalette {
         </label>
       </section>
       <section class="tool-group">
-        <h3>행성 (Shift+클릭 다중 선택)</h3>
+        <h3>행성 (Shift+클릭 다중, 더블클릭 포커스)</h3>
         <ul class="planet-list" id="planet-list"></ul>
         <p class="scale-note">
           궤도·크기는 교육용 로그 스케일입니다. 실제 AU/반지름 비율은 HUD와 README에 표기합니다.
@@ -134,6 +158,26 @@ export class ToolPalette {
       this.modeButtons[m.id] = btn;
     }
 
+    const cameraRow = this.root.querySelector("#camera-row")!;
+    const cameras: { id: CameraMode; label: string }[] = [
+      { id: "orbit", label: "궤도" },
+      { id: "follow", label: "추적" },
+      { id: "free", label: "자유 비행" },
+    ];
+    for (const m of cameras) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tool-btn";
+      btn.textContent = m.label;
+      btn.addEventListener("click", () => {
+        this.handlers.onCameraMode(m.id);
+        this.refresh();
+      });
+      cameraRow.appendChild(btn);
+      this.cameraButtons[m.id] = btn;
+    }
+
+    this.camHint = this.root.querySelector("#cam-hint")!;
     this.planetList = this.root.querySelector("#planet-list")!;
     const infoRoot = this.root.querySelector("#planet-info");
     if (!(infoRoot instanceof HTMLElement)) {

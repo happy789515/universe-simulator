@@ -8,6 +8,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { CameraMode, CameraRig } from "./camera/cameraRig";
 import { SolarSystem, ToolMode } from "./sim/solarSystem";
 import { ToolPalette } from "./ui/toolPalette";
 
@@ -33,6 +34,20 @@ controls.maxDistance = 400;
 const sim = new SolarSystem(scene);
 const raycaster = new Raycaster();
 const pointer = new Vector2();
+
+const rig = new CameraRig({
+  camera,
+  controls,
+  canvas,
+  getFollowAnchor: (out) => {
+    if (sim.selectedIds.size === 1) {
+      const id = sim.selectedIds.values().next().value;
+      const planet = id ? sim.planets.get(id) : undefined;
+      if (planet && !planet.destroyed) return planet.mesh.getWorldPosition(out);
+    }
+    return sim.getFocusTarget().getWorldPosition(out);
+  },
+});
 
 function resize(): void {
   const w = window.innerWidth;
@@ -68,7 +83,10 @@ const palette = new ToolPalette("sidebar", {
   onPauseToggle: (paused) => {
     sim.paused = paused;
   },
+  onCameraMode: (mode: CameraMode) => rig.setMode(mode),
+  getCameraMode: () => rig.mode,
 });
+rig.onChange = () => palette.refresh();
 
 function pickPlanet(clientX: number, clientY: number): string | null {
   const rect = canvas.getBoundingClientRect();
@@ -84,7 +102,7 @@ function pickPlanet(clientX: number, clientY: number): string | null {
   return hits[0].object.userData.planetId as string;
 }
 
-canvas.addEventListener("pointerdown", (e) => {
+function applyPick(e: PointerEvent): void {
   const id = pickPlanet(e.clientX, e.clientY);
   if (!id) {
     if (!e.shiftKey) sim.clearSelection();
@@ -104,6 +122,27 @@ canvas.addEventListener("pointerdown", (e) => {
     else sim.selectOnly(id);
   }
   palette.refresh();
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (rig.mode === "free") {
+    if (e.button !== 0) return;
+    rig.beginPointer(e);
+    return;
+  }
+  applyPick(e);
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  rig.movePointer(e);
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  if (rig.endPointer(e)) applyPick(e);
+});
+
+canvas.addEventListener("pointercancel", (e) => {
+  rig.endPointer(e);
 });
 
 let last = performance.now();
@@ -113,20 +152,21 @@ function loop(now: number): void {
 
   sim.update(dt);
 
-  const focus = sim.getFocusTarget();
-  if (sim.mode === "select" && sim.selectedIds.size === 1) {
-    const id = [...sim.selectedIds][0];
-    const p = sim.planets.get(id);
-    if (p && !p.destroyed) {
-      controls.target.lerp(p.mesh.position, 0.05);
+  rig.update(dt, () => {
+    const focus = sim.getFocusTarget();
+    if (sim.mode === "select" && sim.selectedIds.size === 1) {
+      const id = [...sim.selectedIds][0];
+      const p = sim.planets.get(id);
+      if (p && !p.destroyed) {
+        controls.target.lerp(p.mesh.position, 0.05);
+        return;
+      }
     }
-  } else {
     controls.target.lerp(focus.position, 0.02);
-  }
+  });
 
-  controls.update();
   renderer.render(scene, camera);
-  hud.textContent = sim.getHudText();
+  hud.textContent = `${sim.getHudText()} · ${rig.statusText()}`;
 
   requestAnimationFrame(loop);
 }
